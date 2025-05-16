@@ -12,6 +12,8 @@ use dashmap::DashMap;
 mod models;
 use models::*;
 
+mod route;
+
 async fn db_connection() -> Result<PgPool, sqlx::Error> {
     dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -29,6 +31,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .app_data(web::Data::new(pool.clone()))
+            .configure(route::upload::configure)
     })
     .bind("127.0.0.1:8080")?
     .run()

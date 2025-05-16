@@ -1,8 +1,11 @@
-use crate::{Serialize, Deserialize, Utc, PgPool, HashMap, DashMap};
+use crate::{Serialize, Deserialize, Utc, PgPool, DashMap};
+
+
+type id = uuid::Uuid;
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct UserDB {
-    pub id: uuid::Uuid,
+    pub id: id,
     pub username: String,
     pub email: String,
     pub password_hash: String,
@@ -11,12 +14,12 @@ pub struct UserDB {
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct Group {
-    pub id: uuid::Uuid,
+    pub id: id,
     pub name: String,
-    pub users: Vec<uuid::Uuid>,
-    pub admin: Vec<uuid::Uuid>,
+    pub users: Vec<id>,
+    pub admin: Vec<id>,
     pub description: Option<String>,
-    pub created_by: uuid::Uuid,
+    pub created_by: id,
     pub created_at: chrono::DateTime<Utc>,
 }
 
@@ -38,7 +41,7 @@ pub struct User {
 }
 
 pub struct AppState {
-    users: DashMap<uuid::Uuid, User>,
+    users: DashMap<id, User>,
     pool: PgPool
 } 
 
@@ -52,8 +55,8 @@ pub enum MessageType {
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct Message {
-    pub id: uuid::Uuid,
-    pub to: uuid::Uuid,
+    pub id: id,
+    pub to: id,
     pub data: String,
     pub time: chrono::DateTime<Utc>,
     pub message_type: MessageType
@@ -61,7 +64,7 @@ pub struct Message {
 
 
 pub struct VoiceChat {
-    id: uuid::Uuid,
+    id: id,
     name: String,
-    users: Vec<uuid::Uuid>,
+    users: Vec<id>,
 }
