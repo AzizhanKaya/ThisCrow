@@ -1,7 +1,6 @@
-use crate::{Serialize, Deserialize, Utc, PgPool, DashMap};
+use crate::{Arc, DashMap, Deserialize, PgPool, Serialize, Utc};
 
-
-type id = uuid::Uuid;
+pub type id = uuid::Uuid;
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct UserDB {
@@ -28,43 +27,65 @@ pub enum State {
     Online,
     Idle,
     Dnd, // Do Not Disturb
-    Ghost
+    Ghost,
 }
 
-struct webRTC;
+pub struct webRTC {
+    pub peer_connection: webrtc::peer_connection::RTCPeerConnection,
+}
 
+#[derive(Clone)]
 pub struct User {
     pub username: String,
     pub state: State,
     pub ws_conn: actix_ws::Session, // Web socket connection
-    pub rtc_conn: Option<webRTC> // Voice-chat
 }
 
 pub struct AppState {
-    users: DashMap<id, User>,
-    pool: PgPool
-} 
+    pub users: DashMap<id, User>,
+    pub chats: DashMap<id, VoiceChat>,
+    pub pool: PgPool,
+    pub rtc_api: Arc<webrtc::api::API>,
+}
 
+#[derive(Serialize, Deserialize, Clone)]
+pub enum EventType {
+    Writing { chat: id, is: bool },
+    JoinChannel(id),
+    ExitChannel,
+    ChangeState(State),
+    FriendReq(id),
+    JoinReq(id),
+}
+
+#[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
+pub struct Event {
+    pub time: chrono::DateTime<Utc>,
+    pub r#type: EventType,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum MessageType {
     Direct,
     Group,
-    Info
+    Server,
+    Info,
 }
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct Message {
+    #[serde(skip_deserializing)]
     pub id: id,
+    #[serde(skip_deserializing)]
+    pub from: id,
+    #[serde(skip_serializing)]
     pub to: id,
-    pub data: String,
+    pub data: serde_json::Value,
     pub time: chrono::DateTime<Utc>,
-    pub message_type: MessageType
+    pub r#type: MessageType,
 }
 
-
 pub struct VoiceChat {
-    id: id,
-    name: String,
-    users: Vec<id>,
+    pub id: id,
+    pub users: DashMap<id, webRTC>,
 }

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Login & WebRTC Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+
+        h2 {
+            color: #333;
+        }
+
+        form {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #logs {
+            margin-top: 20px;
+            background-color: #272822;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+
+        .log-info {
+            color: #66d9ef;
+        }
+
+        .log-success {
+            color: #a6e22e;
+        }
+
+        .log-error {
+            color: #f92672;
+        }
+
+        .log-warn {
+            color: #e6db74;
+        }
+
+        .log-debug {
+            color: #ae81ff;
+        }
+
+        .log-ws {
+            color: #fd971f;
+        }
+
+        .log-rtc {
+            color: #4caf50;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Login</h2>
+    <form id="loginForm">
+        <label for="username">Username:</label>
+        <input type="text" id="username" value="aziz" required />
+        <label for="password">Password:</label>
+        <input type="password" id="password" value="123" required />
+        <button type="submit">Login & Start RTC</button>
+    </form>
+
+    <h2>Remote Audio</h2>
+    <audio id="remoteAudio" controls autoplay playsinline></audio>
+
+    <h2>Logs</h2>
+    <div id="logs"></div>
+
+    <script>
+        const logsDiv = document.getElementById('logs');
+        const loginForm = document.getElementById('loginForm');
+        const remoteAudio = document.getElementById('remoteAudio');
+
+        let pc;
+        let ws;
+        let pendingCandidates = [];
+        const chat_id = "123e4567-e89b-12d3-a456-426614174000"
+
+        function log(message, color = 'black') {
+            const entry = document.createElement('div');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            entry.style.color = color;
+            logsDiv.appendChild(entry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+            console.log(message);
+        }
+
+
+
+        loginForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const formData = new URLSearchParams({ username, password });
+
+            try {
+                const res = await fetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(`Login failed: ${res.status} - ${text}`);
+                }
+
+                log("Giriş başarılı, WebSocket bağlantısı kuruluyor...");
+                connectWebSocket();
+
+            } catch (err) {
+                console.error(err.message);
+            }
+        });
+
+        function connectWebSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}/ws/`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = async () => {
+                log("WebSocket bağlantısı açıldı, WebRTC başlatılıyor...");
+                await attachToRTC();
+                initWebRTC();
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+
+                    switch (msg.type) {
+                        case 'offer':
+                            log("Teklif (offer) alındı, cevap hazırlanıyor...");
+                            await pc.setRemoteDescription(new RTCSessionDescription(msg));
+                            await handleIceCandidates();
+                            const answer = await pc.createAnswer();
+                            await pc.setLocalDescription(answer);
+                            ws.send(JSON.stringify({
+                                type: 'answer',
+                                sdp: pc.localDescription.sdp,
+                                chat_id: chat_id
+                            }));
+                            break;
+
+                        case 'answer':
+                            log("Cevap (answer) alındı.");
+                            await pc.setRemoteDescription(new RTCSessionDescription(msg));
+                            await handleIceCandidates();
+                            break;
+
+                        case 'ice-candidate':
+
+                            const candidate = new RTCIceCandidate(msg.data);
+
+                            if (pc.remoteDescription) {
+                                await pc.addIceCandidate(candidate);
+                                log("ICE adayı (candidate) eklendi.");
+                            } else {
+                                pendingCandidates.push(candidate);
+                                log("ICE adayı beklemeye alındı.");
+                            }
+                            break;
+
+                        case 'error':
+                            console.error(msg.error);
+                            break;
+
+                        case 'success':
+                            log("Başarıyla yanıt alındı", msg);
+                            break;
+
+                        default:
+                            log("Bilinmeyen mesaj tipi: " + msg);
+                    }
+                } catch (err) {
+                    console.error(err.message, event.data);
+                }
+            };
+
+            ws.onerror = () => console.error('WebSocket hatası oluştu.');
+            ws.onclose = (e) => console.error(`WebSocket kapandı: kod ${e.code}, temiz: ${e.wasClean}`);
+        }
+
+        async function attachToRTC() {
+            try {
+                const res = await fetch(`/rtc/attach/${chat_id}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(`Failed to attach to RTC: ${res.status} - ${text}`);
+                }
+
+                log("RTC oturumuna başarıyla bağlanıldı (attach_rtc_handler).", 'success');
+            } catch (err) {
+                console.error(err.message);
+            }
+        }
+
+        async function initWebRTC() {
+            try {
+                pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+
+                const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+                pc.onicecandidate = async (event) => {
+                    if (event.candidate) {
+
+                        try {
+                            const res = await fetch(`/rtc/candidate/${chat_id}`, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify(event.candidate)
+                            });
+
+                            if (!res.ok) {
+                                const text = await res.text();
+                                throw new Error(`Failed to send ICE candidate: ${res.status} - ${text}`);
+                            }
+                            log("Yerel ICE adayı gönderildi.", 'rtc');
+                        } catch (err) {
+                            console.error(`ICE adayı gönderilirken hata: ${err.message}`);
+                        }
+                    }
+                };
+
+                pc.ontrack = (event) => {
+                    log("Uzak ses akışı alındı.");
+
+                    if (event.streams && event.streams[0]) {
+                        remoteAudio.srcObject = event.streams[0];
+                    } else {
+                        const inboundStream = new MediaStream();
+                        inboundStream.addTrack(event.track);
+                        remoteAudio.srcObject = inboundStream;
+                    }
+                };
+
+                pc.onconnectionstatechange = () => {
+                    log(`RTC bağlantı durumu: ${pc.connectionState}`, 'rtc');
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    log(`ICE bağlantı durumu: ${pc.iceConnectionState}`, 'rtc');
+                };
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    sdp: pc.localDescription.sdp,
+                    chat_id: chat_id
+                }));
+                log("Teklif (offer) WebSocket üzerinden gönderildi.");
+
+
+            } catch (err) {
+                console.error("WebRTC başlatılırken hata: " + err.message);
+            }
+        }
+
+        async function handleIceCandidates() {
+            for (const c of pendingCandidates) {
+                await pc.addIceCandidate(c);
+                log("Bekleyen ICE adayı eklendi.");
+            }
+            pendingCandidates = [];
+        }
+    </script>
+
+
+</body>
+
+</html>
