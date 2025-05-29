@@ -1,4 +1,4 @@
-use crate::models::{State, User, id};
+use crate::models::id;
 use actix_web::HttpMessage;
 use actix_web::dev::{Service, ServiceResponse, Transform};
 use actix_web::error::ErrorUnauthorized;

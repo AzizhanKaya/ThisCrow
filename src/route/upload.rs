@@ -1,10 +1,10 @@
 use actix_multipart::Multipart;
-use actix_web::{Error, HttpResponse, Responder, web};
-use futures_util::{StreamExt as _, TryStreamExt as _};
+use actix_web::{Error, HttpResponse, web};
+use futures_util::StreamExt as _;
 use sanitize_filename::sanitize;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const UPLOAD_PATHS: &[(&str, &str)] = &[
     ("img", "./uploads/images"),

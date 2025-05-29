@@ -4,12 +4,17 @@ use crate::models::webRTC;
 use crate::{State, id};
 use actix_web::{Error, HttpResponse, error, web};
 use dashmap::DashMap;
+use futures::lock::Mutex;
+use futures::stream;
+use futures_util::StreamExt;
 use log::{error, info, warn};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::usize;
 use tokio;
+use uuid::Uuid;
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -50,7 +55,7 @@ pub fn init_webrtc_api() -> Arc<webrtc::api::API> {
 
     let mut setting_engine = SettingEngine::default();
 
-    setting_engine.set_network_types(vec![network_type::NetworkType::Udp6]);
+    setting_engine.set_network_types(vec![network_type::NetworkType::Udp4]);
 
     Arc::new(
         APIBuilder::new()
@@ -69,15 +74,18 @@ pub async fn attach_rtc_handler(
     let user_id = user.id;
     let chat_id = chat_id.into_inner();
 
-    let voice_chat_entry = state.chats.entry(chat_id).or_insert_with(|| VoiceChat {
-        id: chat_id,
-        users: DashMap::new(),
-    });
-
-    let voice_chat = voice_chat_entry.value();
-
-    if voice_chat.users.contains_key(&user_id) {
-        return Ok(HttpResponse::Conflict().body("User already in RTC session"));
+    if let Some(voice_chat) = state.chats.get(&chat_id) {
+        if voice_chat.users.contains_key(&user_id) {
+            warn!(
+                "User {} already in RTC session for chat {}, cleaning up...",
+                user_id, chat_id
+            );
+            drop(voice_chat);
+            cleanup_user_from_chat(state.clone(), chat_id, user_id).await;
+            return Err(error::ErrorConflict(
+                "User already in RTC session cleaning up...",
+            ));
+        }
     }
 
     let config = RTCConfiguration {
@@ -89,47 +97,58 @@ pub async fn attach_rtc_handler(
         ..Default::default()
     };
 
+    let pc = match state.rtc_api.new_peer_connection(config).await {
+        Ok(pc) => pc,
+        Err(e) => {
+            warn!("Failed to create RTC PeerConnection: {:?}", e);
+            return Err(error::ErrorInternalServerError(
+                "Failed to create RTC PeerConnection",
+            ));
+        }
+    };
+
     let state_ice = state.clone();
 
-    match state.rtc_api.new_peer_connection(config).await {
-        Ok(pc) => {
-            pc.on_ice_candidate(Box::new(move |ice_candidate| {
-                let state_ice = state_ice.clone();
-                Box::pin(async move {
-                    if let Some(candidate) = ice_candidate {
-                        let candidate_json = candidate.to_json().unwrap();
-                        if let Some(mut user) = state_ice.users.get_mut(&user_id) {
-                            if let Err(e) = user
-                                .ws_conn
-                                .text(
-                                    json!({
-                                        "type": "ice-candidate",
-                                        "data": candidate_json
-                                    })
-                                    .to_string(),
-                                )
-                                .await
-                            {
-                                warn!("Failed to send ICE candidate: {:?}", e);
-                            }
-                        }
-                    } else {
-                        info!("ICE candidate: None (All candidates sent)");
+    pc.on_ice_candidate(Box::new(move |ice_candidate| {
+        let state = state_ice.clone();
+        Box::pin(async move {
+            if let Some(candidate) = ice_candidate {
+                let candidate_json = candidate.to_json().unwrap();
+                if let Some(mut user_conn) = state.users.get_mut(&user_id) {
+                    if let Err(e) = user_conn
+                        .ws_conn
+                        .text(
+                            json!({
+                                "type": "ice-candidate",
+                               "data": candidate_json
+                            })
+                            .to_string(),
+                        )
+                        .await
+                    {
+                        warn!("Failed to send ICE candidate: {:?}", e);
                     }
-                })
-            }));
+                }
+            } else {
+                info!("ICE candidate: None (All candidates sent)");
+            }
+        })
+    }));
 
-            let rtc_model = webRTC {
-                peer_connection: pc,
-            };
+    let rtc_model = webRTC {
+        peer_connection: pc,
+    };
 
-            voice_chat.users.insert(user_id, rtc_model);
-            Ok(HttpResponse::Ok().body("RTC attached"))
-        }
-        Err(_) => Err(error::ErrorInternalServerError(
-            "Failed to create RTC PeerConnection",
-        )),
-    }
+    let voice_chat = state.chats.entry(chat_id).or_insert_with(|| VoiceChat {
+        id: uuid::Uuid::try_from("123e4567-e89b-12d3-a456-426614174000").unwrap(),
+        users: DashMap::new(),
+    });
+
+    voice_chat.users.insert(user_id, rtc_model);
+
+    info!("Created new voice chat session for chat_id: {}", chat_id);
+
+    Ok(HttpResponse::Ok().body("RTC attached"))
 }
 
 pub async fn process_offer(
@@ -145,7 +164,10 @@ pub async fn process_offer(
             .ok_or_else(|| error::ErrorBadRequest("SDP field not found or not a string"))?
             .to_string(),
     )
-    .map_err(|_| error::ErrorBadRequest("Malformed SDP offer provided"))?;
+    .map_err(|e| {
+        warn!("Malformed SDP offer provided: {}", e);
+        error::ErrorBadRequest("Malformed SDP offer provided")
+    })?;
 
     let voice_chat = state
         .chats
@@ -166,7 +188,7 @@ pub async fn process_offer(
 
         Box::pin(async move {
             if track.kind() == RTPCodecType::Audio {
-                tokio::spawn(relay_track_to_other_users(state, chat_id, user_id, track));
+                tokio::spawn(relay_track(state, chat_id, user_id, track));
             }
         })
     }));
@@ -180,12 +202,11 @@ pub async fn process_offer(
                 RTCPeerConnectionState::Failed
                 | RTCPeerConnectionState::Disconnected
                 | RTCPeerConnectionState::Closed => {
-                    if let Some(chat) = state.chats.get_mut(&chat_id) {
-                        chat.users.remove(&user_id);
-                        if chat.users.is_empty() {
-                            state.chats.remove(&chat_id);
-                        }
-                    }
+                    info!("Cleaning up user {} from chat {}", user_id, chat_id);
+
+                    tokio::spawn(async move {
+                        cleanup_user_from_chat(state, chat_id, user_id).await;
+                    });
                 }
                 _ => {}
             }
@@ -223,7 +244,7 @@ pub async fn process_ice_candidate(
     candidate_init_rest: web::Json<RTCIceCandidateInitForRest>,
     state: State,
 ) -> Result<HttpResponse, Error> {
-    let user_id = user.id;
+    info!("New ice canidate from user: {}", user.id);
     let chat_id = path.into_inner();
 
     let voice_chat = state
@@ -233,9 +254,9 @@ pub async fn process_ice_candidate(
 
     let user_rtc_session = voice_chat
         .users
-        .get(&user_id)
+        .get(&user.id)
         .ok_or_else(|| {
-            error::ErrorNotFound(format!("User {} not found in chat {}", user_id, chat_id))
+            error::ErrorNotFound(format!("User {} not found in chat {}", user.id, chat_id))
         })
         .unwrap();
 
@@ -299,7 +320,7 @@ pub async fn process_answer(
     }))
 }
 
-async fn relay_track_to_other_users(
+async fn relay_track(
     state: State,
     chat_id: id,
     source_user_id: id,
@@ -316,42 +337,36 @@ async fn relay_track_to_other_users(
         }
     };
 
-    let mut outgoing_tracks: HashMap<id, Arc<TrackLocalStaticRTP>> = HashMap::new();
+    let mut tracks: HashMap<id, Arc<TrackLocalStaticRTP>> = HashMap::new();
 
-    let incoming_codec_params = incoming_track.codec();
-    let current_track_capability: RTCRtpCodecCapability = incoming_codec_params.capability.clone();
+    let codec_params = incoming_track.codec();
+    let track_capability: RTCRtpCodecCapability = codec_params.capability.clone();
 
     for user_entry in voice_chat.users.iter() {
-        let target_user_id = *user_entry.key();
+        let (&user_id, user_rtc) = user_entry.pair();
 
-        if target_user_id == source_user_id {
+        if user_id == source_user_id {
             continue;
         }
 
-        let user_rtc_session = user_entry.value();
-        let pc = &user_rtc_session.peer_connection;
+        let pc = &user_rtc.peer_connection;
 
-        let relayed_track_id = format!(
-            "relay-{}-from-{}-to-{}",
-            incoming_track.id(),
-            source_user_id,
-            target_user_id
-        );
-        let relayed_stream_id = format!(
-            "stream-relay-{}-from-{}-to-{}",
+        let track_id = format!("{}-{}-{}", incoming_track.id(), source_user_id, user_id);
+        let stream_id = format!(
+            "{}-{}-{}",
             incoming_track.stream_id(),
             source_user_id,
-            target_user_id
+            user_id
         );
 
-        let local_track_for_target = Arc::new(TrackLocalStaticRTP::new(
-            current_track_capability.clone(),
-            relayed_track_id.clone(),
-            relayed_stream_id.clone(),
+        let local_track = Arc::new(TrackLocalStaticRTP::new(
+            track_capability.clone(),
+            track_id,
+            stream_id,
         ));
 
-        match pc.add_track(local_track_for_target.clone()).await {
-            Ok(_rtp_sender) => {
+        match pc.add_track(local_track.clone()).await {
+            Ok(rtp_sender) => {
                 let offer = pc
                     .create_offer(None)
                     .await
@@ -374,13 +389,18 @@ async fn relay_track_to_other_users(
                     "sdp": offer.sdp
                 });
 
-                if let Some(mut user) = state.users.get_mut(&target_user_id) {
+                if let Some(mut user) = state.users.get_mut(&user_id) {
                     if let Err(e) = user.ws_conn.text(offer.to_string()).await {
                         warn!("Failed to send offer track: {:?}", e);
+                        if pc.remove_track(&rtp_sender).await.is_err() {
+                            drop(user_entry);
+                            tokio::spawn(cleanup_user_from_chat(state.clone(), chat_id, user_id));
+                        }
+                        continue;
                     }
                 }
 
-                outgoing_tracks.insert(target_user_id, local_track_for_target);
+                tracks.insert(user_id, local_track);
             }
             Err(e) => {
                 error!("Track ekleme hatası: {:?}", e);
@@ -388,48 +408,89 @@ async fn relay_track_to_other_users(
         }
     }
 
+    drop(voice_chat);
+    drop(codec_params);
+    drop(track_capability);
+
     loop {
         match incoming_track.read_rtp().await {
             Ok((rtp_packet, _)) => {
-                let mut write_futures = Vec::new();
+                let rtp_packet = Arc::new(rtp_packet);
 
-                for (target_user_id_ref, local_track) in outgoing_tracks.iter() {
-                    let target_user_id = *target_user_id_ref;
+                let track_entries: Vec<(id, Arc<TrackLocalStaticRTP>)> =
+                    tracks.iter().map(|(k, v)| (*k, Arc::clone(v))).collect();
 
-                    let fut = local_track.write_rtp(&rtp_packet);
-
-                    write_futures.push(async move {
-                        match fut.await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                if e == webrtc::Error::ErrClosedPipe {
-                                    warn!(
-                                        "Closed pipe | Target User: {}, Hata: {:?}",
-                                        target_user_id, e
-                                    );
-                                } else {
-                                    error!(
-                                        "RTP yazma hatası | Target User: {}, Hata: {:?}",
-                                        target_user_id, e
-                                    );
+                let res: Vec<(id, bool)> =
+                    stream::iter(track_entries.into_iter().map(|(user_id, local_track)| {
+                        let rtp_packet = rtp_packet.clone();
+                        async move {
+                            match local_track.write_rtp(&rtp_packet).await {
+                                Ok(_) => (user_id, false),
+                                Err(e) => {
+                                    if e == webrtc::Error::ErrClosedPipe {
+                                        warn!(
+                                            "Closed pipe | Target User: {}, Hata: {:?}",
+                                            user_id, e
+                                        );
+                                        (user_id, true)
+                                    } else {
+                                        error!(
+                                            "RTP yazma hatası | Target User: {}, Hata: {:?}",
+                                            user_id, e
+                                        );
+                                        (user_id, true)
+                                    }
                                 }
                             }
                         }
-                    });
+                    }))
+                    .buffer_unordered(5)
+                    .collect()
+                    .await;
+
+                if !res.iter().any(|(_, remove)| *remove) {
+                    continue;
                 }
-                futures::future::join_all(write_futures).await;
+
+                let Some(voice_chat) = state.chats.get_mut(&chat_id) else {
+                    break;
+                };
+
+                for (user_id, remove) in res {
+                    if remove {
+                        tracks.remove(&user_id);
+                        voice_chat.users.remove(&user_id);
+                    }
+                }
             }
             Err(e) => {
-                if e == webrtc::Error::ErrClosedPipe {
-                } else {
-                    error!(
-                        "Track read_rtp hatası, relay döngüsü sonlandırılıyor | Chat ID: {}, Source User: {}, Hata: {:?}",
-                        chat_id, source_user_id, e
-                    );
-                }
+                error!(
+                    "Track read_rtp hatası, relay döngüsü sonlandırılıyor | Chat ID: {}, Source User: {}, Hata: {:?}",
+                    chat_id, source_user_id, e
+                );
+
+                tokio::spawn(cleanup_user_from_chat(
+                    state.clone(),
+                    chat_id,
+                    source_user_id,
+                ));
+
                 break;
             }
         }
+    }
+}
+
+async fn cleanup_user_from_chat(state: State, chat_id: id, user_id: id) {
+    let Some(voice_chat) = state.chats.get_mut(&chat_id) else {
+        return;
+    };
+
+    voice_chat.users.remove(&user_id);
+
+    if voice_chat.users.is_empty() {
+        drop(voice_chat);
+        state.chats.remove(&chat_id);
     }
 }
 

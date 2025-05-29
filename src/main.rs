@@ -1,8 +1,8 @@
 #![allow(unused_must_use)]
-
+#![allow(non_camel_case_types)]
 use actix_files::NamedFile;
 use actix_web::middleware::Logger;
-use actix_web::{App, HttpServer, web};
+use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use chrono::Utc;
 use dashmap::DashMap;
 use dotenv::dotenv;
@@ -20,6 +20,7 @@ use models::*;
 mod auth;
 
 mod db;
+use db::init_db;
 
 mod route;
 use route::message::ws;
@@ -43,6 +44,8 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to database");
 
+    init_db(pool.clone()).await.expect("Failed to init db");
+
     let state = web::Data::new(AppState {
         users: DashMap::new(),
         chats: DashMap::new(),
@@ -59,12 +62,12 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("")
                     .wrap(auth::AuthMiddleware)
-                    .route("/ws/", web::get().to(ws))
+                    .route("/ws", web::get().to(ws))
                     .configure(route::upload::configure)
                     .configure(route::webrtc::configure),
             )
     })
-    .bind("127.0.0.1:8080")?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

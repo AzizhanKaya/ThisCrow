@@ -123,16 +123,41 @@
         let pendingCandidates = [];
         const chat_id = "123e4567-e89b-12d3-a456-426614174000"
 
-        function log(message, color = 'black') {
+        function log(message, type = 'info') {
             const entry = document.createElement('div');
             entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-            entry.style.color = color;
+
+            switch (type) {
+                case 'info':
+                    entry.classList.add('log-info');
+                    break;
+                case 'success':
+                    entry.classList.add('log-success');
+                    break;
+                case 'error':
+                    console.error(message);
+                    entry.classList.add('log-error');
+                    break;
+                case 'warn':
+                    console.error(message);
+                    entry.classList.add('log-warn');
+                    break;
+                case 'debug':
+                    entry.classList.add('log-debug');
+                    break;
+                case 'ws':
+                    entry.classList.add('log-ws');
+                    break;
+                case 'rtc':
+                    entry.classList.add('log-rtc');
+                    break;
+                default:
+                    entry.classList.add('log-info');
+            }
+
             logsDiv.appendChild(entry);
             logsDiv.scrollTop = logsDiv.scrollHeight;
-            console.log(message);
         }
-
-
 
         loginForm.addEventListener('submit', async (event) => {
             event.preventDefault();
@@ -152,10 +177,11 @@
                     throw new Error(`Login failed: ${res.status} - ${text}`);
                 }
 
-                log("Giriş başarılı, WebSocket bağlantısı kuruluyor...");
+                log("Giriş başarılı, WebSocket bağlantısı kuruluyor...", 'success');
                 connectWebSocket();
 
             } catch (err) {
+                log(`Login sırasında hata: ${err.message}`, 'error');
                 console.error(err.message);
             }
         });
@@ -166,8 +192,9 @@
             ws = new WebSocket(wsUrl);
 
             ws.onopen = async () => {
-                log("WebSocket bağlantısı açıldı, WebRTC başlatılıyor...");
+                log("WebSocket bağlantısı açıldı, WebRTC başlatılıyor...", 'ws');
                 await attachToRTC();
+                log("RTC bağlantısı başlatıldı", 'rtc');
                 initWebRTC();
             };
 
@@ -177,7 +204,7 @@
 
                     switch (msg.type) {
                         case 'offer':
-                            log("Teklif (offer) alındı, cevap hazırlanıyor...");
+                            log("Teklif (offer) alındı, cevap hazırlanıyor...", 'rtc');
                             await pc.setRemoteDescription(new RTCSessionDescription(msg));
                             await handleIceCandidates();
                             const answer = await pc.createAnswer();
@@ -190,7 +217,7 @@
                             break;
 
                         case 'answer':
-                            log("Cevap (answer) alındı.");
+                            log("Cevap (answer) alındı.", 'rtc');
                             await pc.setRemoteDescription(new RTCSessionDescription(msg));
                             await handleIceCandidates();
                             break;
@@ -201,51 +228,69 @@
 
                             if (pc.remoteDescription) {
                                 await pc.addIceCandidate(candidate);
-                                log("ICE adayı (candidate) eklendi.");
+                                log("ICE adayı (candidate) eklendi.", 'rtc');
                             } else {
                                 pendingCandidates.push(candidate);
-                                log("ICE adayı beklemeye alındı.");
+                                log("ICE adayı beklemeye alındı.", 'debug');
                             }
                             break;
 
                         case 'error':
+                            log(`Sunucu hatası: ${msg.error}`, 'error');
                             console.error(msg.error);
                             break;
 
                         case 'success':
-                            log("Başarıyla yanıt alındı", msg);
+                            log("Başarıyla yanıt alındı.", 'success');
                             break;
 
                         default:
-                            log("Bilinmeyen mesaj tipi: " + msg);
+                            log("Bilinmeyen mesaj tipi: " + msg.type, 'warn');
                     }
                 } catch (err) {
+                    log(`WebSocket mesajı işlenirken hata: ${err.message}. Mesaj: ${event.data}`, 'error');
                     console.error(err.message, event.data);
                 }
             };
 
-            ws.onerror = () => console.error('WebSocket hatası oluştu.');
-            ws.onclose = (e) => console.error(`WebSocket kapandı: kod ${e.code}, temiz: ${e.wasClean}`);
+            ws.onerror = () => log('WebSocket hatası oluştu.', 'error');
+            ws.onclose = (e) => log(`WebSocket kapandı: kod ${e.code}, temiz: ${e.wasClean}`, 'warn');
         }
 
         async function attachToRTC() {
-            try {
-                const res = await fetch(`/rtc/attach/${chat_id}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
+            const MAX_RETRIES = 5;
+            const RETRY_DELAY_MS = 1000;
+
+            for (let retryCount = 0; retryCount < MAX_RETRIES; retryCount++) {
+                try {
+                    const res = await fetch(`/rtc/attach/${chat_id}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+
+                    if (res.ok) {
+                        log("RTC oturumuna başarıyla bağlanıldı (attach_rtc_handler).", 'success');
+                        return;
+                    } else {
+                        if (res.status === 409 && retryCount < MAX_RETRIES - 1) {
+
+                            log(`RTC'ye bağlanılamadı: Çakışma (${res.status}). ${retryCount + 1}/${MAX_RETRIES} tekrar deniyor...`, 'warn');
+                            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                        } else {
+                            const text = await res.text();
+                            throw new Error(`Failed to attach to RTC: ${res.status} - ${text}`);
+                        }
                     }
-                });
-
-                if (!res.ok) {
-                    const text = await res.text();
-                    throw new Error(`Failed to attach to RTC: ${res.status} - ${text}`);
+                } catch (err) {
+                    log(`RTC'ye bağlanma hatası: ${err.message}`, 'error');
+                    console.error(err.message);
+                    throw err;
                 }
-
-                log("RTC oturumuna başarıyla bağlanıldı (attach_rtc_handler).", 'success');
-            } catch (err) {
-                console.error(err.message);
             }
+            log(`RTC'ye bağlanılamadı: Tüm ${MAX_RETRIES} deneme başarısız oldu.`, 'error');
+            throw new Error(`Failed to attach to RTC after ${MAX_RETRIES} attempts.`);
         }
 
         async function initWebRTC() {
@@ -254,7 +299,18 @@
                     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
                 });
 
-                const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const constraints = {
+                    audio: {
+                        channelCount: 2,
+                        sampleRate: 48000,
+                        sampleSize: 16,
+                        echoCancellation: true,
+                        autoGainControl: true
+                    },
+                    video: false
+                };
+
+                const localStream = await navigator.mediaDevices.getUserMedia(constraints);
                 localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
                 pc.onicecandidate = async (event) => {
@@ -275,13 +331,14 @@
                             }
                             log("Yerel ICE adayı gönderildi.", 'rtc');
                         } catch (err) {
+                            log(`ICE adayı gönderilirken hata: ${err.message}`, 'error');
                             console.error(`ICE adayı gönderilirken hata: ${err.message}`);
                         }
                     }
                 };
 
                 pc.ontrack = (event) => {
-                    log("Uzak ses akışı alındı.");
+                    log("Uzak ses akışı alındı.", 'rtc');
 
                     if (event.streams && event.streams[0]) {
                         remoteAudio.srcObject = event.streams[0];
@@ -309,10 +366,11 @@
                     sdp: pc.localDescription.sdp,
                     chat_id: chat_id
                 }));
-                log("Teklif (offer) WebSocket üzerinden gönderildi.");
+                log("Teklif (offer) WebSocket üzerinden gönderildi.", 'ws');
 
 
             } catch (err) {
+                log("WebRTC başlatılırken hata: " + err.message, 'error');
                 console.error("WebRTC başlatılırken hata: " + err.message);
             }
         }
@@ -320,7 +378,7 @@
         async function handleIceCandidates() {
             for (const c of pendingCandidates) {
                 await pc.addIceCandidate(c);
-                log("Bekleyen ICE adayı eklendi.");
+                log("Bekleyen ICE adayı eklendi.", 'rtc');
             }
             pendingCandidates = [];
         }

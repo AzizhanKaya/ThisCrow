@@ -3,15 +3,6 @@ use crate::{Arc, DashMap, Deserialize, PgPool, Serialize, Utc};
 pub type id = uuid::Uuid;
 
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
-pub struct UserDB {
-    pub id: id,
-    pub username: String,
-    pub email: String,
-    pub password_hash: String,
-    pub created_at: chrono::DateTime<Utc>,
-}
-
-#[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct Group {
     pub id: id,
     pub name: String,
@@ -50,7 +41,6 @@ pub struct AppState {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EventType {
-    Writing { chat: id, is: bool },
     JoinChannel(id),
     ExitChannel,
     ChangeState(State),
@@ -58,7 +48,7 @@ pub enum EventType {
     JoinReq(id),
 }
 
-#[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Event {
     pub time: chrono::DateTime<Utc>,
     pub r#type: EventType,
@@ -72,11 +62,22 @@ pub enum MessageType {
     Info,
 }
 
+impl From<MessageType> for &'static str {
+    fn from(message_type: MessageType) -> Self {
+        match message_type {
+            MessageType::Direct => "direct",
+            MessageType::Group => "group",
+            MessageType::Server => "server",
+            MessageType::Info => "info",
+        }
+    }
+}
+
 #[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
 pub struct Message {
-    #[serde(skip_deserializing)]
+    #[serde(skip_deserializing, default)]
     pub id: id,
-    #[serde(skip_deserializing)]
+    #[serde(skip_deserializing, default)]
     pub from: id,
     #[serde(skip_serializing)]
     pub to: id,

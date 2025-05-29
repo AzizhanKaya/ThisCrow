@@ -1,6 +1,7 @@
 use crate::State;
 use crate::auth::JwtUser;
-use crate::models::{Event, Message, MessageType, State as UserState, User};
+use crate::db;
+use crate::models::{Event, Message, MessageType, State as UserState, User, id};
 use crate::route::webrtc::process_answer;
 use crate::route::webrtc::process_offer;
 use actix_web::web;
@@ -8,16 +9,12 @@ use actix_web::{Error, HttpRequest, HttpResponse};
 use actix_ws::Message as WsMessage;
 use chrono::Utc;
 use futures_util::StreamExt;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use uuid::Uuid;
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
-enum WebRTC {
-    answer(Value),
-    offer(Value),
-}
+use webrtc::data::message;
 
 pub async fn ws(
     req: HttpRequest,
@@ -43,34 +40,79 @@ pub async fn ws(
             match msg {
                 WsMessage::Text(text) => {
                     if let Ok(mut message) = serde_json::from_str::<Message>(&text) {
+                        if matches!(
+                            message.r#type,
+                            MessageType::Direct | MessageType::Server | MessageType::Group
+                        ) {
+                            db::save_message(
+                                &state.pool,
+                                user_id,
+                                message.to,
+                                message.data.clone(),
+                                message.r#type.clone(),
+                            );
+                        }
                         match message.r#type {
                             MessageType::Direct => {
-                                let mut user_to = state.users.get_mut(&user_id).unwrap();
+                                let Some(mut user_to) = state.users.get_mut(&message.to) else {
+                                    continue;
+                                };
 
                                 message.from = user_id;
                                 message.time = Utc::now();
 
-                                user_to.ws_conn.text(json!(message).to_string());
+                                user_to.ws_conn.text(json!(message).to_string()).await;
                             }
 
                             MessageType::Group => {
-                                let mut user_to = state.users.get_mut(&user_id).unwrap();
+                                let users =
+                                    db::get_group_users(&state.pool, message.to).await.unwrap();
 
                                 message.from = user_id;
                                 message.time = Utc::now();
 
-                                user_to.ws_conn.text(json!(message).to_string());
+                                let state = state.clone();
+
+                                let message = Arc::new(message);
+
+                                tokio::spawn(futures::stream::iter(users).for_each_concurrent(
+                                    None,
+                                    move |user_id| {
+                                        let state = state.clone();
+                                        let message = message.clone();
+                                        async move {
+                                            if let Some(mut user_to) = state.users.get_mut(&user_id)
+                                            {
+                                                user_to
+                                                    .ws_conn
+                                                    .text(json!(message).to_string())
+                                                    .await;
+                                            }
+                                        }
+                                    },
+                                ));
                             }
+
+                            MessageType::Info => {
+                                let Some(mut user_to) = state.users.get_mut(&message.to) else {
+                                    continue;
+                                };
+
+                                message.from = user_id;
+                                message.time = Utc::now();
+
+                                user_to
+                                    .ws_conn
+                                    .text(json!(message).to_string())
+                                    .await
+                                    .is_err();
+                            }
+
                             _ => {}
                         }
                     }
 
-                    if let Ok(event) = serde_json::from_str::<Event>(&text) {
-                        match event.r#type {
-                            _ => {}
-                        }
-                    }
-
+                    /*
                     if let Ok(web_rtc) = serde_json::from_str::<WebRTC>(&text) {
                         match web_rtc {
                             WebRTC::answer(answer) => {
@@ -109,12 +151,20 @@ pub async fn ws(
 
                                 session.text(answer).await;
                             }
+
                         }
+
                     }
+                    */
                 }
 
                 WsMessage::Close(_) => {
-                    state.users.remove(&user_id);
+                    let cleanup_state = state.clone();
+
+                    tokio::spawn(async move {
+                        cleanup_user_disconnect(cleanup_state, user_id).await;
+                    });
+
                     break;
                 }
 
@@ -122,7 +172,11 @@ pub async fn ws(
                     let _ = session.pong(&ping).await;
                 }
 
-                _ => {}
+                WsMessage::Pong(_) => {}
+
+                _ => {
+                    warn!("Unhandled WebSocket message type from user {}", user_id);
+                }
             }
         }
     });
@@ -130,14 +184,25 @@ pub async fn ws(
     Ok(response)
 }
 
-macro_rules! handle_enum_dispatch {
-    ($enum_type:ident, $value:expr, $($arg:expr),*) => {
-        match $value {
-            $( $enum_type::$variant(data) => {
-                paste! {
-                    [<$enum_type _ $variant _handle>](data, $($arg),*).await
-                }
-            }, )*
+async fn cleanup_user_disconnect(state: State, user_id: id) {
+    state.users.remove(&user_id);
+
+    let mut chats_to_remove = Vec::new();
+
+    for chat_entry in state.chats.iter() {
+        let chat_id = *chat_entry.key();
+        let chat = chat_entry.value();
+
+        if chat.users.contains_key(&user_id) {
+            chat.users.remove(&user_id);
+
+            if chat.users.is_empty() {
+                chats_to_remove.push(chat_id);
+            }
         }
-    };
+    }
+
+    for chat_id in chats_to_remove {
+        state.chats.remove(&chat_id);
+    }
 }
