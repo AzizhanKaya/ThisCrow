@@ -1,18 +1,12 @@
-FROM rust:1.86 as builder
-
+FROM messense/rust-musl-cross:x86_64-musl as builder
+ENV SQLX_OFFLINE=true
 WORKDIR /app
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --target x86_64-unknown-linux-musl
 
 # --- Runtime image ---
-FROM debian:bullseye-slim
+FROM scratch
 
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/target/release/ThisCrow /usr/local/bin/ThisCrow
-
-CMD ["ThisCrow"]
-
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/ThisCrow /usr/local/bin/ThisCrow
+ENTRYPOINT ["ThisCrow"]
+EXPOSE 8080

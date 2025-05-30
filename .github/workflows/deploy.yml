@@ -48,6 +48,15 @@ jobs:
           username: ${{ env.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            if [ ! -d "/opt/thiscrow" ]; then
+              git clone https://github.com/${{ github.repository }} /opt/thiscrow
+            else
+              cd /opt/thiscrow && git pull
+            fi
+
+            export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            export JWT_SECRET=${{ secrets.JWT_SECRET }}
+
             docker pull ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             docker compose -f /opt/thiscrow/docker-compose.yml down
             docker compose -f /opt/thiscrow/docker-compose.yml up -d

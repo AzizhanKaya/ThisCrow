@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE IF NOT EXISTS voicechats (\n            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n            name TEXT NOT NULL\n        );",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "7ed9ee284d01d1d1cc1755eb2994ed0cb04023ccd0e739c489cb9ab84f9be341"
+}

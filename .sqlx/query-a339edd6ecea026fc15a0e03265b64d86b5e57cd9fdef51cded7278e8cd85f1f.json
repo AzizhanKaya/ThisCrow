@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE IF NOT EXISTS chats (\n            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n            name TEXT NOT NULL\n        );",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "a339edd6ecea026fc15a0e03265b64d86b5e57cd9fdef51cded7278e8cd85f1f"
+}
