@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use actix_cors::Cors;
-use actix_files::Files;
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use chrono::Utc;
@@ -81,9 +80,8 @@ async fn main() -> std::io::Result<()> {
                             .configure(route::state::configure),
                     ),
             )
-            .service(Files::new("/", "./dist").index_file("index.html"))
     })
-    .bind("localhost:8080")?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

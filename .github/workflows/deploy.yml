@@ -52,10 +52,18 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             if [ ! -d "/opt/thiscrow" ]; then
-              git clone https://github.com/${{ github.repository }} /opt/thiscrow
+              git clone --recurse-submodules https://github.com/${{ github.repository }} /opt/thiscrow
             else
               cd /opt/thiscrow && git fetch origin && git reset --hard origin/main
+              git submodule update --init --recursive
             fi
+
+            cd /opt/thiscrow/frontend && git fetch origin && git reset --hard origin/master
+
+            pnpm install
+            pnpm build
+            rm -rf /var/www/thiscrow/*
+            cp -r dist/* /var/www/thiscrow/
 
             export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             export JWT_SECRET=${{ secrets.JWT_SECRET }}
