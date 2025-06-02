@@ -1,8 +1,10 @@
 services:
   thiscrow:
-    image: azizhankaya/thiscrow:${VERSION_TAG}
+    image: azizhankaya/thiscrow
     container_name: thiscrow
     restart: always
+    build:
+      context: .
     environment:
       DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/thiscrow"
       JWT_SECRET: ${JWT_SECRET}

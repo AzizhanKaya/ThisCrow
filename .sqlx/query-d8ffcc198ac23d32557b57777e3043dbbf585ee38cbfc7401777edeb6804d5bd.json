@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        CREATE TABLE IF NOT EXISTS friend_requests (\n            \"from\" UUID NOT NULL REFERENCES users(id),\n            \"to\" UUID NOT NULL REFERENCES users(id),\n            PRIMARY KEY (\"from\", \"to\")\n        );\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d8ffcc198ac23d32557b57777e3043dbbf585ee38cbfc7401777edeb6804d5bd"
+}

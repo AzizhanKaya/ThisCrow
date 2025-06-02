@@ -1,4 +1,6 @@
-use crate::{Arc, DashMap, Deserialize, PgPool, Serialize, Utc};
+use std::collections::HashSet;
+
+use crate::{DashMap, Deserialize, PgPool, Serialize, Utc};
 
 pub type id = uuid::Uuid;
 
@@ -19,10 +21,7 @@ pub enum State {
     Idle,
     Dnd, // Do Not Disturb
     Ghost,
-}
-
-pub struct webRTC {
-    pub peer_connection: webrtc::peer_connection::RTCPeerConnection,
+    Offline,
 }
 
 #[derive(Clone)]
@@ -36,12 +35,11 @@ pub struct AppState {
     pub users: DashMap<id, User>,
     pub chats: DashMap<id, VoiceChat>,
     pub pool: PgPool,
-    pub rtc_api: Arc<webrtc::api::API>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub enum EventType {
-    JoinChannel(id),
+pub enum Events {
+    JoinChannel { id: id, direct: bool },
     ExitChannel,
     ChangeState(State),
     FriendReq(id),
@@ -51,13 +49,17 @@ pub enum EventType {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Event {
     pub time: chrono::DateTime<Utc>,
-    pub r#type: EventType,
+    pub event: Events,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, sqlx::Type, Default)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "text")]
+#[sqlx(rename_all = "lowercase")]
 pub enum MessageType {
     Direct,
     Group,
+    #[default]
     Server,
     Info,
 }
@@ -73,7 +75,19 @@ impl From<MessageType> for &'static str {
     }
 }
 
-#[derive(sqlx::FromRow, Serialize, Deserialize, Clone)]
+impl From<String> for MessageType {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "direct" => MessageType::Direct,
+            "group" => MessageType::Group,
+            "server" => MessageType::Server,
+            "info" => MessageType::Info,
+            _ => panic!("Unkown Type"),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow, Serialize, Deserialize, Clone, Default)]
 pub struct Message {
     #[serde(skip_deserializing, default)]
     pub id: id,
@@ -88,5 +102,5 @@ pub struct Message {
 
 pub struct VoiceChat {
     pub id: id,
-    pub users: DashMap<id, webRTC>,
+    pub users: HashSet<id>,
 }

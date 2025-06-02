@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO messages (from_user, to_user, data, type)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id\n        ",
+  "query": "\n        INSERT INTO messages (\"from\", \"to\", data, \"type\")\n        VALUES ($1, $2, $3, $4)\n        RETURNING id\n        ",
   "describe": {
     "columns": [
       {
@@ -21,5 +21,5 @@
       false
     ]
   },
-  "hash": "0a30b64fa2523a53788919c45a4102b3428a8e0bf5576efa9f7714acb0eb4d7f"
+  "hash": "192372ea27b71f667b543308a584d494661cf6b2e0211d32cca14343fbf46852"
 }

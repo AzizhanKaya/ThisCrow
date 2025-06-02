@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE IF NOT EXISTS messages (\n            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n            \"from\" UUID NOT NULL REFERENCES users(id),\n            \"to\" UUID NOT NULL REFERENCES users(id),\n            data JSONB NOT NULL,\n            time TIMESTAMPTZ NOT NULL DEFAULT now(),\n            type TEXT NOT NULL\n        );",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ffb17030ffb94da89d7acfeffe343119013c46359ba551da94933064de3b875f"
+}

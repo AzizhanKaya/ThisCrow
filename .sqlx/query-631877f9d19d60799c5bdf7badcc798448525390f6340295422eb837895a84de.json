@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE IF NOT EXISTS users (\n            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n            avatar TEXT,\n            name TEXT NOT NULL,\n            username TEXT NOT NULL UNIQUE,\n            email TEXT NOT NULL UNIQUE,\n            password_hash TEXT NOT NULL,\n            created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n        );",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "631877f9d19d60799c5bdf7badcc798448525390f6340295422eb837895a84de"
+}

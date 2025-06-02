@@ -35,7 +35,9 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
   deploy:
     needs: build-and-push
@@ -52,7 +54,7 @@ jobs:
             if [ ! -d "/opt/thiscrow" ]; then
               git clone https://github.com/${{ github.repository }} /opt/thiscrow
             else
-              cd /opt/thiscrow && git pull
+              cd /opt/thiscrow && git fetch origin && git reset --hard origin/main
             fi
 
             export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}

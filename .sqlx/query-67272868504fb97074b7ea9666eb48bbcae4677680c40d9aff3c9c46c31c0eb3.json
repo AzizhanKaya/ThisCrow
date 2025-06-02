@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT * FROM messages\n        WHERE \n            (\n                \"from\" = $1 AND \"to\" = $2 OR\n                \"from\" = $2 AND \"to\" = $1\n            )\n            AND time > $3 AND time < $4\n        ORDER BY time ASC\n        LIMIT $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "from",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "to",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "type",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "67272868504fb97074b7ea9666eb48bbcae4677680c40d9aff3c9c46c31c0eb3"
+}

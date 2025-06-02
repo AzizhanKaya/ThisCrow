@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE IF NOT EXISTS groups (\n            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),\n            avatar TEXT,\n            name TEXT NOT NULL,\n            users UUID[] NOT NULL DEFAULT '{}',\n            voicechats UUID[] NOT NULL DEFAULT '{}',\n            chats UUID[] NOT NULL DEFAULT '{}',\n            admin UUID[] NOT NULL DEFAULT '{}',\n            description TEXT,\n            created_by UUID NOT NULL REFERENCES users(id),\n            created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n        );",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ffc61bcab0b1ee745d9f9a858c301e821d54d32ff0019a55c70b5b7a34130cc5"
+}
