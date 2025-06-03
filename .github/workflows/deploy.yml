@@ -60,8 +60,8 @@ jobs:
 
             cd /opt/thiscrow/frontend && git fetch origin && git reset --hard origin/master
 
-            pnpm install
-            pnpm build
+            /root/.local/share/pnpm/pnpm install
+            /root/.local/share/pnpm/pnpm build
             rm -rf /var/www/thiscrow/*
             cp -r dist/* /var/www/thiscrow/
 
