@@ -386,15 +386,16 @@ pub async fn get_messages(
     let messages = sqlx::query_as!(
         Message,
         r#"
-        SELECT * FROM messages
-        WHERE 
-            (
-                "from" = $1 AND "to" = $2 OR
-                "from" = $2 AND "to" = $1
-            )
-            AND time < $3
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE 
+                (("from" = $1 AND "to" = $2) OR
+                ("from" = $2 AND "to" = $1))
+                AND time < $3
+            ORDER BY time DESC
+            LIMIT $4
+        ) sub
         ORDER BY time ASC
-        LIMIT $4
         "#,
         user_1,
         user_2,

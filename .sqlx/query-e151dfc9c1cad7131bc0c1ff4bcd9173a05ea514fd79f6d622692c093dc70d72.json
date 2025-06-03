@@ -15,12 +15,12 @@
       },
       {
         "ordinal": 2,
-        "name": "username",
+        "name": "name",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "name",
+        "name": "username",
         "type_info": "Text"
       },
       {
