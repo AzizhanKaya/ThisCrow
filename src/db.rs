@@ -379,11 +379,9 @@ pub async fn get_messages(
     user_1: Uuid,
     user_2: Uuid,
     len: i64,
-    start: Option<DateTime<Utc>>,
     end: Option<DateTime<Utc>>,
 ) -> Result<Vec<Message>, sqlx::Error> {
-    let start_time = start.unwrap_or(DateTime::from_timestamp(0, 0).unwrap());
-    let end_time = end.unwrap_or(DateTime::from_timestamp(i64::MAX, 0).unwrap_or(Utc::now()));
+    let end_time = end.unwrap_or(Utc::now());
 
     let messages = sqlx::query_as!(
         Message,
@@ -394,13 +392,12 @@ pub async fn get_messages(
                 "from" = $1 AND "to" = $2 OR
                 "from" = $2 AND "to" = $1
             )
-            AND time > $3 AND time < $4
+            AND time < $3
         ORDER BY time ASC
-        LIMIT $5
+        LIMIT $4
         "#,
         user_1,
         user_2,
-        start_time,
         end_time,
         len
     )

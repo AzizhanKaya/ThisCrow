@@ -21,7 +21,6 @@ pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpRespons
 pub struct MessagesQuery {
     user_id: id,
     len: Option<i64>,
-    start: Option<DateTime<Utc>>,
     end: Option<DateTime<Utc>>,
 }
 
@@ -30,23 +29,10 @@ pub async fn get_messages(
     user: web::ReqData<JwtUser>,
     query: web::Query<MessagesQuery>,
 ) -> Result<HttpResponse, Error> {
-    if query.start.is_none() && query.end.is_none() {
-        return Err(error::ErrorUnprocessableEntity(
-            "start or end date should be given",
-        ));
-    }
-
     let len = query.len.unwrap_or(50);
-    let messages = db::get_messages(
-        &state.pool,
-        user.id,
-        query.user_id,
-        len,
-        query.start,
-        query.end,
-    )
-    .await
-    .unwrap();
+    let messages = db::get_messages(&state.pool, user.id, query.user_id, len, query.end)
+        .await
+        .unwrap();
 
     Ok(HttpResponse::Ok().json(json!(messages)))
 }
