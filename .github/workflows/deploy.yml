@@ -60,13 +60,12 @@ jobs:
 
             cd /opt/thiscrow/frontend && git fetch origin && git reset --hard origin/master
 
-            /root/.local/share/pnpm/pnpm install
-            /root/.local/share/pnpm/pnpm build
             rm -rf /var/www/thiscrow/*
             cp -r dist/* /var/www/thiscrow/
 
             export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             export JWT_SECRET=${{ secrets.JWT_SECRET }}
+            export SMTP_PASSWORD=${{ github.ref_name }}
             export VERSION_TAG=${{ github.ref_name }}
 
             docker pull ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
