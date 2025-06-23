@@ -10,7 +10,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - uploads_data:/uploads
+      - uploads:/uploads
     depends_on:
       - db
   db:
@@ -27,4 +27,6 @@ services:
 
 volumes:
   db:
+    driver: local
+  uploads:
     driver: local
