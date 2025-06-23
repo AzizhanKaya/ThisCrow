@@ -20,10 +20,10 @@ mod models;
 mod auth;
 
 mod db;
-use db::init_db;
 
 mod route;
-use route::message::ws;
+
+mod mail;
 
 #[get("/ping")]
 async fn ping() -> impl Responder {
@@ -40,15 +40,18 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv().ok();
 
+    route::upload::init();
+    route::auth::clear_otp_schedular();
+
     let pool = db_connection()
         .await
         .expect("Failed to connect to database");
 
-    init_db(pool.clone()).await.expect("Failed to init db");
+    db::init_db(pool.clone()).await.expect("Failed to init db");
 
     let state = web::Data::new(AppState {
         users: DashMap::new(),
-        chats: DashMap::new(),
+        chat_users: DashMap::new(),
         pool,
     });
 
@@ -72,12 +75,13 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api")
                     .configure(route::auth::configure)
                     .service(ping)
+                    .configure(route::upload::configure)
                     .service(
                         web::scope("")
                             .wrap(auth::AuthMiddleware)
-                            .route("/ws", web::get().to(ws))
-                            .configure(route::upload::configure)
-                            .configure(route::state::configure),
+                            .route("/ws", web::get().to(route::message::ws))
+                            .configure(route::state::configure)
+                            .configure(route::event::configure),
                     ),
             )
     })

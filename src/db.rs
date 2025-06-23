@@ -193,11 +193,7 @@ pub async fn create_group(
     Ok(rec.id)
 }
 
-pub async fn save_message(
-    pool: &Pool<Postgres>,
-    from: Uuid,
-    message: &Message,
-) -> Result<Uuid, sqlx::Error> {
+pub async fn save_message(pool: &Pool<Postgres>, message: &Message) -> Result<Uuid, sqlx::Error> {
     let msg_type: &str = message.r#type.clone().into();
     let rec = sqlx::query!(
         r#"
@@ -205,7 +201,7 @@ pub async fn save_message(
         VALUES ($1, $2, $3, $4)
         RETURNING id
         "#,
-        from,
+        message.from,
         message.to,
         message.data,
         msg_type
@@ -357,8 +353,8 @@ pub async fn get_groups(
 
 pub async fn in_group(
     pool: &Pool<Postgres>,
-    group_id: Uuid,
     user_id: Uuid,
+    group_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         r#"
@@ -443,6 +439,26 @@ pub async fn get_users_like(
     .await?;
 
     Ok(users)
+}
+
+pub async fn has_registered(
+    pool: &Pool<Postgres>,
+    username: &str,
+    email: &str,
+) -> Result<bool, sqlx::Error> {
+    let exists: Option<bool> = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM users WHERE email = $1 OR username = $2
+        )
+        "#,
+        email,
+        username
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists.unwrap_or(false))
 }
 
 fn sort_pair(a: Uuid, b: Uuid) -> (Uuid, Uuid) {
