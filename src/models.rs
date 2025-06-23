@@ -20,7 +20,6 @@ pub enum State {
     Online,
     Idle,
     Dnd, // Do Not Disturb
-    Ghost,
     Offline,
 }
 
@@ -33,14 +32,14 @@ pub struct User {
 
 pub struct AppState {
     pub users: DashMap<id, User>,
-    pub chats: DashMap<id, VoiceChat>,
+    pub chat_users: DashMap<id, id>,
     pub pool: PgPool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Events {
     JoinChannel { id: id, direct: bool },
-    ExitChannel,
+    ExitChannel { direct: bool },
     ChangeState(State),
     FriendReq(id),
     JoinReq(id),
@@ -49,7 +48,7 @@ pub enum Events {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Event {
     pub time: chrono::DateTime<Utc>,
-    pub event: Events,
+    pub types: Events,
 }
 
 #[derive(Serialize, Deserialize, Clone, sqlx::Type, Default)]
@@ -96,11 +95,7 @@ pub struct Message {
     #[serde(skip_serializing)]
     pub to: id,
     pub data: serde_json::Value,
+    #[serde(skip_deserializing, default)]
     pub time: chrono::DateTime<Utc>,
     pub r#type: MessageType,
-}
-
-pub struct VoiceChat {
-    pub id: id,
-    pub users: HashSet<id>,
 }
