@@ -106,7 +106,7 @@ pub async fn add_friend(
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/event")
-            .route("/search_friends", web::get().to(search_users))
+            .route("/search_users", web::get().to(search_users))
             .route("/add_friend", web::post().to(add_friend)),
     );
 }
