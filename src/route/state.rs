@@ -7,7 +7,9 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let user = db::get_user(&state.pool, user.id).await.unwrap();
+    let user = db::get_user(&state.pool, user.id)
+        .await
+        .ok_or(error::ErrorUnauthorized(""))?;
 
     Ok(HttpResponse::Ok().json(user))
 }
