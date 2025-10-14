@@ -8,7 +8,6 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct Username {
@@ -82,7 +81,6 @@ pub async fn add_friend(
         };
 
         let message = Message {
-            id: Uuid::new_v4(),
             from: user.id,
             data: json!({
                 "type": message_type

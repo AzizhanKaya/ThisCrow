@@ -1,117 +1,27 @@
-use crate::models::{Message, id};
+use crate::models::{Message, MessageType, id};
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use chrono::{DateTime, Utc};
 use rand_core::OsRng;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 
-pub async fn init_db(pool: Pool<Postgres>) -> Result<(), sqlx::Error> {
-    sqlx::query!(r#"CREATE EXTENSION IF NOT EXISTS "uuid-ossp";"#)
-        .execute(&pool)
-        .await?;
-
-    sqlx::query!(
-        "CREATE TABLE IF NOT EXISTS users (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            avatar TEXT,
-            name TEXT NOT NULL,
-            username TEXT NOT NULL UNIQUE,
-            email TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );"
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        "CREATE TABLE IF NOT EXISTS groups (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            avatar TEXT,
-            name TEXT NOT NULL,
-            users UUID[] NOT NULL DEFAULT '{}',
-            voicechats UUID[] NOT NULL DEFAULT '{}',
-            chats UUID[] NOT NULL DEFAULT '{}',
-            admin UUID[] NOT NULL DEFAULT '{}',
-            description TEXT,
-            created_by UUID NOT NULL REFERENCES users(id),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );"
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        r#"CREATE TABLE IF NOT EXISTS messages (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            "from" UUID NOT NULL REFERENCES users(id),
-            "to" UUID NOT NULL REFERENCES users(id),
-            data JSONB NOT NULL,
-            time TIMESTAMPTZ NOT NULL DEFAULT now(),
-            type TEXT NOT NULL
-        );"#
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        "CREATE TABLE IF NOT EXISTS voicechats (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            name TEXT NOT NULL
-        );"
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        "CREATE TABLE IF NOT EXISTS chats (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            name TEXT NOT NULL
-        );"
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        "CREATE TABLE IF NOT EXISTS friends (
-            user_1 UUID NOT NULL REFERENCES users(id),
-            user_2 UUID NOT NULL REFERENCES users(id),
-            PRIMARY KEY (user_1, user_2),
-            CHECK (user_1 < user_2)
-        );"
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query!(
-        r#"
-        CREATE TABLE IF NOT EXISTS friend_requests (
-            "from" UUID NOT NULL REFERENCES users(id),
-            "to" UUID NOT NULL REFERENCES users(id),
-            PRIMARY KEY ("from", "to")
-        );
-        "#
-    )
-    .execute(&pool)
-    .await?;
-
-    Ok(())
-}
-
 #[derive(Serialize, sqlx::FromRow, Default)]
 pub struct UserDB {
+    #[serde(skip_serializing, skip_deserializing)]
     pub id: id,
     pub avatar: Option<String>,
     pub name: String,
     pub username: String,
+    #[serde(skip_serializing, skip_deserializing)]
     pub email: String,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub password_hash: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -193,23 +103,28 @@ pub async fn create_group(
     Ok(rec.id)
 }
 
-pub async fn save_message(pool: &Pool<Postgres>, message: &Message) -> Result<Uuid, sqlx::Error> {
+pub async fn save_message<T: Serialize>(
+    pool: &Pool<Postgres>,
+    message: &Message<T>,
+) -> Result<(), sqlx::Error> {
     let msg_type: &str = message.r#type.clone().into();
-    let rec = sqlx::query!(
+
+    let message_data: Value = serde_json::to_value(&message.data).unwrap();
+
+    sqlx::query!(
         r#"
         INSERT INTO messages ("from", "to", data, "type")
         VALUES ($1, $2, $3, $4)
-        RETURNING id
         "#,
         message.from,
         message.to,
-        message.data,
+        message_data,
         msg_type
     )
     .fetch_one(pool)
     .await?;
 
-    Ok(rec.id)
+    Ok(())
 }
 
 pub async fn get_group_users(
@@ -370,36 +285,63 @@ pub async fn in_group(
     Ok(result.is_some())
 }
 
-pub async fn get_messages(
+#[derive(sqlx::FromRow)]
+struct MessageRow {
+    from: Uuid,
+    to: Uuid,
+    time: DateTime<Utc>,
+    r#type: MessageType,
+    data: Value,
+}
+
+pub async fn get_messages<T: DeserializeOwned + Serialize + Unpin + Send>(
     pool: &Pool<Postgres>,
     user_1: Uuid,
     user_2: Uuid,
-    len: i64,
+    len: Option<i64>,
     end: Option<DateTime<Utc>>,
-) -> Result<Vec<Message>, sqlx::Error> {
-    let end_time = end.unwrap_or(Utc::now());
+    order: Option<String>,
+) -> Result<Vec<Message<T>>, sqlx::Error> {
+    let time_query = match order.as_deref() {
+        Some("inc") | None => "time < $3",
+        Some("dec") => "time >= $3",
+        _ => return Err(sqlx::Error::RowNotFound),
+    };
 
-    let messages = sqlx::query_as!(
-        Message,
+    let query = format!(
         r#"
-        SELECT * FROM (
             SELECT * FROM messages
-            WHERE 
-                (("from" = $1 AND "to" = $2) OR
-                ("from" = $2 AND "to" = $1))
-                AND time < $3
-            ORDER BY time DESC
+            WHERE (("from" = $1 AND "to" = $2) OR ("from" = $2 AND "to" = $1)) AND 
+            {}
             LIMIT $4
-        ) sub
-        ORDER BY time ASC
         "#,
-        user_1,
-        user_2,
-        end_time,
-        len
-    )
-    .fetch_all(pool)
-    .await?;
+        time_query,
+    );
+
+    let messages_rows: Vec<MessageRow> = sqlx::query_as::<_, MessageRow>(&query)
+        .bind(user_1)
+        .bind(user_2)
+        .bind(end.unwrap_or_else(Utc::now))
+        .bind(len.unwrap_or(1000))
+        .fetch_all(pool)
+        .await?;
+
+    let messages: Vec<Message<T>> = messages_rows
+        .into_iter()
+        .map(|row| {
+            let mut msg = Message {
+                id: Default::default(),
+                from: row.from,
+                to: row.to,
+                time: row.time,
+                r#type: row.r#type,
+                data: serde_json::from_value(row.data).unwrap(),
+            };
+            msg.id = msg.compute_id();
+
+            msg
+        })
+        .collect();
 
     Ok(messages)
 }

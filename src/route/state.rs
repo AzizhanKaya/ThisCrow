@@ -1,10 +1,11 @@
-use crate::models::State as StateUser;
+use crate::models::State as UserState;
 use crate::{State, auth::JwtUser, db, models::id};
 use actix_web::{Error, HttpResponse, error, web};
 use chrono::{DateTime, Utc};
 use db::UserDB;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
     let user = db::get_user(&state.pool, user.id)
@@ -19,6 +20,7 @@ pub struct MessagesQuery {
     user_id: id,
     len: Option<i64>,
     end: Option<DateTime<Utc>>,
+    order: Option<String>,
 }
 
 pub async fn get_messages(
@@ -26,10 +28,16 @@ pub async fn get_messages(
     user: web::ReqData<JwtUser>,
     query: web::Query<MessagesQuery>,
 ) -> Result<HttpResponse, Error> {
-    let len = query.len.unwrap_or(50);
-    let messages = db::get_messages(&state.pool, user.id, query.user_id, len, query.end)
-        .await
-        .unwrap();
+    let messages = db::get_messages::<Value>(
+        &state.pool,
+        user.id,
+        query.user_id,
+        query.len,
+        query.end,
+        query.order.clone(),
+    )
+    .await
+    .unwrap();
 
     Ok(HttpResponse::Ok().json(messages))
 }
@@ -38,7 +46,7 @@ pub async fn get_messages(
 pub struct User {
     #[serde(flatten)]
     user: UserDB,
-    state: StateUser,
+    state: UserState,
 }
 
 pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
@@ -47,14 +55,14 @@ pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<Ht
         error::ErrorInternalServerError("Error while getting friends")
     })?;
 
-    let response_users: Vec<User> = friends
+    let friends: Vec<User> = friends
         .into_iter()
         .map(|f| {
             let user_state = state
                 .users
                 .get(&f.id)
                 .map(|u| u.state.clone())
-                .unwrap_or(StateUser::Offline);
+                .unwrap_or(UserState::Offline);
 
             User {
                 user: f,
@@ -62,7 +70,7 @@ pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<Ht
             }
         })
         .collect();
-    Ok(HttpResponse::Ok().json(response_users))
+    Ok(HttpResponse::Ok().json(friends))
 }
 
 pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {

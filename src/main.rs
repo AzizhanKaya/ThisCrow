@@ -9,21 +9,16 @@ use chrono::Utc;
 use dashmap::DashMap;
 use dotenv::dotenv;
 use models::AppState;
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::env;
 
 pub type State = web::Data<AppState>;
 
-mod models;
-
 mod auth;
-
 mod db;
-
-mod route;
-
 mod mail;
+mod models;
+mod route;
 
 #[get("/ping")]
 async fn ping() -> impl Responder {
@@ -47,11 +42,9 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to database");
 
-    db::init_db(pool.clone()).await.expect("Failed to init db");
-
     let state = web::Data::new(AppState {
         users: DashMap::new(),
-        chat_users: DashMap::new(),
+        voice_chats: DashMap::new(),
         pool,
     });
 

@@ -74,7 +74,13 @@ async fn register(form: web::Form<Register>, state: State) -> Result<HttpRespons
         .map(char::from)
         .collect();
 
-    mail::send_email(
+    if cfg!(debug_assertions) {
+        println!(
+            r#"http://localhost:8080/api/auth/verify_email?email={}&otp={}"#,
+            form.email, otp
+        )
+    } else {
+        mail::send_email(
         &form.email,
         "ThisCrow Email Verification",
         format!(
@@ -82,6 +88,7 @@ async fn register(form: web::Form<Register>, state: State) -> Result<HttpRespons
             form.email, otp
         ),
     ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"));
+    }
 
     EMAIL_OTP_MAP
         .lock()
@@ -128,7 +135,7 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
     let token = create_jwt(id, user.username.clone());
 
     Ok(HttpResponse::Found()
-        .append_header((header::LOCATION, "/"))
+        .append_header((header::LOCATION, "http://localhost:5173/"))
         .cookie(
             Cookie::build("session", &token)
                 .path("/")

@@ -65,7 +65,7 @@ jobs:
 
             export POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             export JWT_SECRET=${{ secrets.JWT_SECRET }}
-            export SMTP_PASSWORD=${{ github.ref_name }}
+            export SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
             export VERSION_TAG=${{ github.ref_name }}
 
             docker pull ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
