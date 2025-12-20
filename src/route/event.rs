@@ -3,27 +3,16 @@ use crate::models::{Message, MessageType};
 use crate::{State, auth::JwtUser, db, models::id};
 use actix_web::{Error, HttpResponse, error, web};
 use chrono::Utc;
-use db::UserDB;
 use log::warn;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashSet;
-
 #[derive(Deserialize)]
 pub struct Username {
     username: String,
 }
 
-#[derive(Serialize)]
-struct UserSearchResult {
-    #[serde(flatten)]
-    user: UserDB,
-    is_friend: bool,
-}
-
 pub async fn search_users(
     state: State,
-    user: web::ReqData<JwtUser>,
     query: web::Query<Username>,
 ) -> Result<HttpResponse, Error> {
     let users = db::get_users_like(&state.pool, &query.username)
@@ -33,28 +22,7 @@ pub async fn search_users(
             error::ErrorInternalServerError("Error while searching users")
         })?;
 
-    let friends = db::get_friends(&state.pool, user.id).await.map_err(|e| {
-        warn!("Error while getting friends: {}", e);
-        error::ErrorInternalServerError("Error while getting friends")
-    })?;
-
-    let friend_ids: HashSet<id> = friends.into_iter().map(|f| f.id).collect();
-
-    let results: Vec<UserSearchResult> = users
-        .into_iter()
-        .map(|u| UserSearchResult {
-            user: UserDB {
-                id: u.id,
-                avatar: u.avatar,
-                name: u.name,
-                username: u.username,
-                ..Default::default()
-            },
-            is_friend: friend_ids.contains(&u.id),
-        })
-        .collect();
-
-    Ok(HttpResponse::Ok().json(results))
+    Ok(HttpResponse::Ok().json(users))
 }
 
 #[derive(Deserialize)]
@@ -90,7 +58,7 @@ pub async fn add_friend(
             ..Default::default()
         };
 
-        session.ws_conn.text(json!(message).to_string());
+        session.ws.text(json!(message).to_string());
     }
 
     Ok(HttpResponse::Ok().json(json!({

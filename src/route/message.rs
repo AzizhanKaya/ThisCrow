@@ -8,8 +8,7 @@ use actix_web::{Error, HttpRequest, HttpResponse};
 use actix_ws::MessageStream;
 use actix_ws::{Message as WsMessage, Session};
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
-use dashmap::DashSet;
+use chrono::Utc;
 use futures_util::StreamExt;
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -30,9 +29,8 @@ pub async fn ws(
 
     let user = User {
         username: username.clone(),
-        state: UserState::Online,
-        ws_conn: session.clone(),
-        voice_chat: None,
+        ws: session.clone(),
+        ..Default::default()
     };
 
     state.users.insert(user_id, user);
@@ -61,6 +59,12 @@ async fn handle_connection(
                 }
             }
             WsMessage::Close(_) => {
+                state.users.remove(&user_id);
+
+                if let Err(e) = db::update_last_seen(&state.pool, user_id, Utc::now()).await {
+                    warn!("Failed to update last_seen for {}: {:?}", user_id, e);
+                }
+
                 break;
             }
             WsMessage::Ping(ping) => {
@@ -69,12 +73,9 @@ async fn handle_connection(
             WsMessage::Pong(_) => {}
             _ => {
                 warn!("Unhandled WebSocket message type from user {}", user_id);
-                break;
             }
         }
     }
-
-    state.users.remove(&user_id);
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -90,23 +91,19 @@ async fn handle_text(user_id: id, state: &State, text: String) -> Result<()> {
         message.from = user_id;
 
         let now = Utc::now();
-        if (now - message.time).abs() > Duration::milliseconds(500) {
-            if let Some(mut session) = state.users.get_mut(&user_id) {
-                let message = Message {
-                    data: json!({
-                        "op": "change_time",
-                        "time": now,
-                        "id": message.id
-                    }),
-                    time: Utc::now(),
-                    r#type: MessageType::Server,
-                    ..Default::default()
-                };
 
-                session.ws_conn.text(json!(message).to_string());
-            }
-            message.time = Utc::now();
-        }
+        let notify = Message {
+            data: json!({
+                "status": "sent",
+                "id": message.id
+            }),
+            to: user_id,
+            ..Default::default()
+        };
+
+        send_message(&state, notify);
+
+        message.time = now;
         message.id = message.compute_id();
 
         let authorized = is_authorized(state, &message).await?;
@@ -155,7 +152,7 @@ where
 {
     match message.r#type {
         MessageType::Direct | MessageType::Info => {
-            send_direct_message(state, message).await;
+            send_message(state, message).await;
         }
         MessageType::Group | MessageType::InfoGroup => {
             send_group_message(state, message).await;
@@ -164,9 +161,9 @@ where
     }
 }
 
-async fn send_direct_message<T: Serialize>(state: &State, message: Message<T>) {
+async fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     if let Some(mut user_to) = state.users.get_mut(&message.to) {
-        user_to.ws_conn.text(json!(message).to_string()).await;
+        user_to.ws.text(json!(message).to_string()).await;
     }
 }
 
@@ -184,7 +181,7 @@ where
 
     for user_id in users {
         if let Some(user_to) = state.users.get_mut(&user_id) {
-            conns.push(user_to.ws_conn.clone());
+            conns.push(user_to.ws.clone());
         }
     }
 
@@ -196,12 +193,6 @@ where
             }
         }
     }));
-}
-
-async fn send_info_message<T: Serialize>(state: &State, message: Message<T>) {
-    if let Some(mut user_to) = state.users.get_mut(&message.to) {
-        user_to.ws_conn.text(json!(message).to_string()).await;
-    }
 }
 
 async fn handle_event(state: &State, event: Message<Event>) {
@@ -220,8 +211,8 @@ async fn handle_event(state: &State, event: Message<Event>) {
 
                 let mut message = Message::default();
 
-                message.from = event.from;
-                message.r#type = MessageType::Server;
+                message.from = user_id;
+                message.r#type = MessageType::Info;
                 message.data = json!({
                     "event": "change_state",
                     "user": user_id,
@@ -240,16 +231,17 @@ async fn handle_event(state: &State, event: Message<Event>) {
 
                 user.voice_chat = None;
 
-                let user_ids: Vec<Uuid> = if let Some(users) = state.voice_chats.get_mut(&chat_id) {
-                    users.remove(&user_id);
-                    users.iter().map(|r| *r.key()).collect()
-                } else {
-                    return;
-                };
+                let user_ids: Vec<Uuid> =
+                    if let Some(mut users) = state.voice_chats.get_mut(&chat_id) {
+                        users.retain(|u| u != &user_id);
+                        users.clone()
+                    } else {
+                        return;
+                    };
 
                 let message = Message {
                     from: user_id,
-                    r#type: MessageType::Server,
+                    r#type: MessageType::Info,
                     data: json!({
                         "event": "exit_channel",
                         "user": user_id,
@@ -268,16 +260,14 @@ async fn handle_event(state: &State, event: Message<Event>) {
 
                 user.voice_chat = Some(chat_id);
 
-                let users = state
-                    .voice_chats
-                    .entry(chat_id)
-                    .or_insert_with(DashSet::new);
-
-                let user_ids = users.iter().map(|r| *r).collect();
+                let mut users = state.voice_chats.entry(chat_id).or_default();
+                let user_ids = users.clone();
+                users.push(user_id);
+                drop(users);
 
                 let message = Message {
                     from: user_id,
-                    r#type: MessageType::Server,
+                    r#type: MessageType::Info,
                     data: json!({
                         "event": "join_channel",
                         "user": user_id,
@@ -289,8 +279,6 @@ async fn handle_event(state: &State, event: Message<Event>) {
                 send_message_all(state, message, user_ids).await;
             }
         }
-
-        _ => {}
     }
 }
 
@@ -303,7 +291,7 @@ where
     let conns: Vec<Session> = user_ids
         .into_iter()
         .filter_map(|user_id| state.users.get(&user_id))
-        .map(|user_to| user_to.ws_conn.clone())
+        .map(|user_to| user_to.ws.clone())
         .collect();
 
     tokio::spawn(futures::stream::iter(conns).for_each_concurrent(Some(10), {

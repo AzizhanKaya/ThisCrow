@@ -85,9 +85,8 @@ async fn register(form: web::Form<Register>, state: State) -> Result<HttpRespons
         "ThisCrow Email Verification",
         format!(
             r#"<a href="https://thiscrow.vate.world/api/auth/verify_email?email={}&otp={}">Verify your registration</a>"#,
-            form.email, otp
-        ),
-    ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"));
+            form.email, otp)
+        ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"));
     }
 
     EMAIL_OTP_MAP

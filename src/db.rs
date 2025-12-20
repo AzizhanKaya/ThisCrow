@@ -1,4 +1,5 @@
 use crate::models::{Message, MessageType, id};
+use anyhow::Result;
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -12,7 +13,6 @@ use uuid::Uuid;
 
 #[derive(Serialize, sqlx::FromRow, Default)]
 pub struct UserDB {
-    #[serde(skip_serializing, skip_deserializing)]
     pub id: id,
     pub avatar: Option<String>,
     pub name: String,
@@ -23,6 +23,8 @@ pub struct UserDB {
     pub password_hash: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
     pub created_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub last_seen: Option<DateTime<Utc>>,
 }
 
 pub async fn register(
@@ -45,7 +47,7 @@ pub async fn register(
         r#"
         INSERT INTO users (username, name, email, password_hash)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, avatar, name, username, email, password_hash, created_at
+        RETURNING *
         "#,
         username,
         name,
@@ -401,6 +403,58 @@ pub async fn has_registered(
     .await?;
 
     Ok(exists.unwrap_or(false))
+}
+
+pub async fn get_dms(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<UserDB>, sqlx::Error> {
+    sqlx::query_as!(
+        UserDB,
+        r#"
+        SELECT
+            u.*
+        FROM (
+            SELECT DISTINCT ON (
+                CASE
+                    WHEN "from" = $1 THEN "to"
+                    ELSE "from"
+                END
+            )
+                CASE
+                    WHEN "from" = $1 THEN "to"
+                    ELSE "from"
+                END AS other_user_id,
+                time
+            FROM messages
+            WHERE "from" = $1 OR "to" = $1
+            ORDER BY
+                CASE
+                    WHEN "from" = $1 THEN "to"
+                    ELSE "from"
+                END,
+                time DESC
+        ) m
+        JOIN users u ON u.id = m.other_user_id
+        ORDER BY m.time DESC
+        "#,
+        user_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn update_last_seen(
+    pool: &Pool<Postgres>,
+    user_id: id,
+    time: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query!(
+        "UPDATE users SET last_seen = $1 WHERE id = $2",
+        time,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 fn sort_pair(a: Uuid, b: Uuid) -> (Uuid, Uuid) {

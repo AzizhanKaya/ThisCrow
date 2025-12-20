@@ -1,8 +1,7 @@
+use std::default;
+
 use crate::{DashMap, PgPool, Utc};
-use anyhow::Result;
 use chrono::DateTime;
-use chrono::{TimeZone, offset::LocalResult};
-use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,25 +18,48 @@ pub struct Group {
     pub created_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Clone, Default)]
+pub enum Page {
+    Friends,
+    DM,
+    Group(id),
+    #[default]
+    None,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub enum State {
+    #[default]
     Online,
     Idle,
     Dnd,
     Offline,
 }
 
-#[derive(Clone)]
 pub struct User {
     pub username: String,
     pub state: State,
-    pub ws_conn: actix_ws::Session,
+    pub active: Page,
+    pub ws: actix_ws::Session,
     pub voice_chat: Option<id>,
+}
+
+#[allow(unreachable_code)]
+impl Default for User {
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+            state: State::default(),
+            active: Page::default(),
+            voice_chat: Option::default(),
+            ws: unreachable!("ws must be initialized explicitly"),
+        }
+    }
 }
 
 pub struct AppState {
     pub users: DashMap<id, User>,
-    pub voice_chats: DashMap<id, DashSet<id>>,
+    pub voice_chats: DashMap<id, Vec<id>>,
     pub pool: PgPool,
 }
 
@@ -94,6 +116,7 @@ pub struct Message<T> {
     pub from: id,
     pub to: id,
     pub data: T,
+    #[serde(default = "now")]
     pub time: chrono::DateTime<Utc>,
     pub r#type: MessageType,
 }
@@ -108,4 +131,8 @@ impl<T: Serialize> Message<T> {
 
         Uuid::new_v5(&MESSAGE_NAMESPACE, data_str.as_bytes())
     }
+}
+
+fn now() -> DateTime<Utc> {
+    Utc::now()
 }

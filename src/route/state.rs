@@ -61,8 +61,7 @@ pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<Ht
             let user_state = state
                 .users
                 .get(&f.id)
-                .map(|u| u.state.clone())
-                .unwrap_or(UserState::Offline);
+                .map_or(UserState::Offline, |u| u.state.clone());
 
             User {
                 user: f,
@@ -81,12 +80,58 @@ pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<Htt
     Ok(HttpResponse::Ok().json(grops))
 }
 
+#[derive(Deserialize)]
+pub struct UserQuery {
+    id: id,
+}
+
+pub async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<HttpResponse, Error> {
+    if let Some(user) = db::get_user(&state.pool, query.id).await {
+        let user_state = state
+            .users
+            .get(&user.id)
+            .map_or(UserState::Offline, |u| u.state.clone());
+
+        Ok(HttpResponse::Ok().json(User {
+            user: user,
+            state: user_state,
+        }))
+    } else {
+        Ok(HttpResponse::NotFound().body("User not found"))
+    }
+}
+
+pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+    let dms = db::get_dms(&state.pool, user.id).await.map_err(|e| {
+        warn!("Error while getting dms: {}", e);
+        error::ErrorInternalServerError("Error while getting dms")
+    })?;
+
+    let dms: Vec<User> = dms
+        .into_iter()
+        .map(|f| {
+            let user_state = state
+                .users
+                .get(&f.id)
+                .map_or(UserState::Offline, |u| u.state.clone());
+
+            User {
+                user: f,
+                state: user_state,
+            }
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(dms))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/state")
             .route("/messages", web::get().to(get_messages))
             .route("/friends", web::get().to(get_friends))
+            .route("/dms", web::get().to(get_dms))
             .route("/groups", web::get().to(get_groups))
+            .route("/user", web::get().to(get_user))
             .route("/me", web::get().to(me)),
     );
 }
