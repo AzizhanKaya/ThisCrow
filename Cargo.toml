@@ -9,7 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 actix-web = "4.0"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+bitflags = "1.3"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.8", features = ["v5", "serde"] }
@@ -18,21 +19,24 @@ chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
 log = "0.4"
 env_logger = "0.9"
-actix-ws = "0.2"
+actix-ws = "0.3.1"
 futures = "0.3"
 futures-util = "0.3"
-dashmap = "5.4"
+dashmap = "6.1"
 sanitize-filename = "0.5"
 actix-multipart = "0.7.0"
 once_cell = "1.21"
 actix-cors = "0.7"
 actix-files = "0.6"
-tokio = "1.45"
+tokio = { version = "1.45", features = ["macros"] }
 argon2 = "0.4"
 rand_core = "0.6"
 sha256 = "1.6.0"
 rand = "0.9.1"
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 openssl = { version = "0.10", features = ["vendored"] }
-canonical_json = "0.5"
 anyhow = "*"
+bytes = "1"
+rocksdb = "0.24"
+rmp-serde = "1.3.1"
+itertools = "0.10"

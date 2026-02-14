@@ -1,4 +1,4 @@
-use crate::models::id;
+use crate::id::id;
 use actix_web::HttpMessage;
 use actix_web::dev::{Service, ServiceResponse, Transform};
 use actix_web::error::ErrorUnauthorized;
@@ -17,7 +17,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JwtUser {
     pub id: id,
-    pub username: String,
     pub exp: usize,
 }
 
@@ -30,7 +29,7 @@ static JWT_SECRET: Lazy<Vec<u8>> = Lazy::new(|| {
 static ENCODING_KEY: Lazy<EncodingKey> = Lazy::new(|| EncodingKey::from_secret(&JWT_SECRET));
 static DECODING_KEY: Lazy<DecodingKey> = Lazy::new(|| DecodingKey::from_secret(&JWT_SECRET));
 
-pub fn create_jwt(user_id: id, username: String) -> String {
+pub fn create_jwt(user_id: id) -> String {
     let expiration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -39,7 +38,6 @@ pub fn create_jwt(user_id: id, username: String) -> String {
 
     let jwt_user = JwtUser {
         id: user_id,
-        username,
         exp: expiration,
     };
 

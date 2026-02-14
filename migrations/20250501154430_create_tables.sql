@@ -1,58 +1,88 @@
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Create users table
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
     avatar TEXT,
     username TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
--- Create groups table
-CREATE TABLE IF NOT EXISTS groups (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    avatar TEXT,
-    name TEXT NOT NULL,
-    users UUID [] NOT NULL DEFAULT '{}',
-    voicechats UUID [] NOT NULL DEFAULT '{}',
-    chats UUID [] NOT NULL DEFAULT '{}',
-    admin UUID [] NOT NULL DEFAULT '{}',
-    description TEXT,
-    created_by UUID NOT NULL REFERENCES users(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
--- Create messages table
-CREATE TABLE IF NOT EXISTS messages (
-    id UUID PRIMARY KEY,
-    "from" UUID NOT NULL REFERENCES users(id),
-    "to" UUID NOT NULL REFERENCES users(id),
-    data JSONB NOT NULL,
-    time TIMESTAMPTZ NOT NULL DEFAULT now(),
-    type TEXT NOT NULL
-);
--- Create voicechats table
-CREATE TABLE IF NOT EXISTS voicechats (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name TEXT NOT NULL
-);
--- Create chats table
-CREATE TABLE IF NOT EXISTS chats (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name TEXT NOT NULL
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen TIMESTAMPTZ
 );
 -- Create friends table
-CREATE TABLE IF NOT EXISTS friends (
-    user_1 UUID NOT NULL REFERENCES users(id),
-    user_2 UUID NOT NULL REFERENCES users(id),
+CREATE TABLE friends (
+    user_1 BIGINT NOT NULL REFERENCES users(id),
+    user_2 BIGINT NOT NULL REFERENCES users(id),
     requested BOOLEAN DEFAULT true,
     PRIMARY KEY (user_1, user_2),
     CHECK (user_1 < user_2)
 );
 -- Create friend_requests table
-CREATE TABLE IF NOT EXISTS friend_requests (
-    "from" UUID NOT NULL REFERENCES users(id),
-    "to" UUID NOT NULL REFERENCES users(id),
+CREATE TABLE friend_requests (
+    "from" BIGINT NOT NULL REFERENCES users(id),
+    "to" BIGINT NOT NULL REFERENCES users(id),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY ("from", "to")
+);
+-- Create groups table
+CREATE TABLE groups (
+    id BIGSERIAL PRIMARY KEY,
+    icon TEXT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by BIGINT NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Create group_users table
+CREATE TABLE group_users (
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    position SMALLINT NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+-- Create channels table
+CREATE TABLE channels (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    channel_type BOOLEAN NOT NULL DEFAULT false,
+    position BIGINT NOT NULL,
+    name TEXT NOT NULL
+);
+-- Create roles table
+CREATE TABLE roles (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT,
+    permissions BIGINT NOT NULL DEFAULT 0,
+    position SMALLINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Create group_user_roles table
+CREATE TABLE group_user_roles (
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id, role_id)
+);
+-- Create permission_overrides table
+CREATE TABLE permission_overrides (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    channel_id BIGINT REFERENCES channels(id) ON DELETE CASCADE,
+    role_id BIGINT REFERENCES roles(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    allow BIGINT NOT NULL DEFAULT 0,
+    deny BIGINT NOT NULL DEFAULT 0,
+    CHECK (
+        (
+            role_id IS NOT NULL
+            AND user_id IS NULL
+        )
+        OR (
+            role_id IS NULL
+            AND user_id IS NOT NULL
+        )
+    ),
+    UNIQUE (channel_id, role_id, user_id)
 );

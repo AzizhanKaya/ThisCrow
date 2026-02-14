@@ -1,26 +1,41 @@
-use crate::models::State as UserState;
-use crate::{State, auth::JwtUser, db, models::id};
+use crate::id::id;
+use crate::state::group::Permissions;
+use crate::{State, middleware::JwtUser};
 use actix_web::{Error, HttpResponse, error, web};
 use chrono::{DateTime, Utc};
-use db::UserDB;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let user = db::get_user(&state.pool, user.id)
-        .await
-        .ok_or(error::ErrorUnauthorized(""))?;
-
-    Ok(HttpResponse::Ok().json(user))
+#[derive(Serialize)]
+struct Me {
+    id: id,
+    version: id,
+    username: String,
+    avatar: Option<String>,
 }
 
-#[derive(Deserialize)]
+pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+    let user = state
+        .users
+        .get(&user.id)
+        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?;
+
+    let me = Me {
+        id: user.id,
+        version: user.get_version(),
+        username: user.state.username.clone(),
+        avatar: user.state.avatar.clone(),
+    };
+
+    Ok(HttpResponse::Ok().json(me))
+}
+
+#[derive(Deserialize, Debug)]
 pub struct MessagesQuery {
     user_id: id,
     len: Option<i64>,
-    end: Option<DateTime<Utc>>,
-    order: Option<String>,
+    start: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
 }
 
 pub async fn get_messages(
@@ -28,99 +43,117 @@ pub async fn get_messages(
     user: web::ReqData<JwtUser>,
     query: web::Query<MessagesQuery>,
 ) -> Result<HttpResponse, Error> {
-    let messages = db::get_messages::<Value>(
-        &state.pool,
-        user.id,
-        query.user_id,
-        query.len,
-        query.end,
-        query.order.clone(),
-    )
-    .await
-    .unwrap();
+    let messages = state
+        .messages
+        .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
+        .map_err(|e| {
+            warn!("Error while getting messages: {}", e);
+            error::ErrorInternalServerError("Error while getting messages")
+        })?;
 
     Ok(HttpResponse::Ok().json(messages))
 }
 
-#[derive(Serialize)]
-pub struct User {
-    #[serde(flatten)]
-    user: UserDB,
-    state: UserState,
+#[derive(Deserialize, Debug)]
+pub struct ChannelMessagesQuery {
+    group_id: id,
+    channel_id: id,
+    len: Option<i64>,
+    start: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+}
+
+pub async fn get_channel_messages(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    query: web::Query<ChannelMessagesQuery>,
+) -> Result<HttpResponse, Error> {
+    state
+        .groups
+        .get(&query.group_id)
+        .filter(|group| {
+            group
+                .compute_permissions(user.id, Some(query.channel_id))
+                .contains(Permissions::VIEW_MESSAGES)
+        })
+        .ok_or_else(|| error::ErrorUnauthorized(""))?;
+
+    let messages = state
+        .messages
+        .get_channel_messages(
+            query.group_id,
+            query.channel_id,
+            query.start,
+            query.end,
+            query.len,
+        )
+        .map_err(|e| {
+            warn!("Error while getting messages: {}", e);
+            error::ErrorInternalServerError("Error while getting messages")
+        })?;
+
+    Ok(HttpResponse::Ok().json(messages))
 }
 
 pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let friends = db::get_friends(&state.pool, user.id).await.map_err(|e| {
-        warn!("Error while getting friends: {}", e);
-        error::ErrorInternalServerError("Error while getting friends")
-    })?;
+    let friends = state
+        .users
+        .get(&user.id)
+        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?
+        .state
+        .friends
+        .clone();
 
-    let friends: Vec<User> = friends
-        .into_iter()
-        .map(|f| {
-            let user_state = state
-                .users
-                .get(&f.id)
-                .map_or(UserState::Offline, |u| u.state.clone());
-
-            User {
-                user: f,
-                state: user_state,
-            }
-        })
-        .collect();
     Ok(HttpResponse::Ok().json(friends))
 }
 
-pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let grops = db::get_groups(&state.pool, user.id).await.map_err(|e| {
-        warn!("Error while getting groups: {}", e);
-        error::ErrorInternalServerError("Error while getting groups")
-    })?;
-    Ok(HttpResponse::Ok().json(grops))
+#[derive(Serialize)]
+pub struct FriendRequets {
+    incoming: Vec<id>,
+    outgoing: Vec<id>,
+    version: id,
 }
 
-#[derive(Deserialize)]
-pub struct UserQuery {
-    id: id,
-}
+pub async fn get_friend_requets(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<HttpResponse, Error> {
+    if let Some(user) = state.users.get(&user.id) {
+        let incoming = user.state.friend_requests.clone();
+        let outgoing = user.state.friend_requests_sent.clone();
+        let version = user.get_version();
 
-pub async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<HttpResponse, Error> {
-    if let Some(user) = db::get_user(&state.pool, query.id).await {
-        let user_state = state
-            .users
-            .get(&user.id)
-            .map_or(UserState::Offline, |u| u.state.clone());
-
-        Ok(HttpResponse::Ok().json(User {
-            user: user,
-            state: user_state,
-        }))
-    } else {
-        Ok(HttpResponse::NotFound().body("User not found"))
+        return Ok(HttpResponse::Ok().json(FriendRequets {
+            incoming,
+            outgoing,
+            version,
+        }));
     }
+
+    Err(error::ErrorUnauthorized("Session has not initialized"))
+}
+
+pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+    let groups = state
+        .users
+        .get(&user.id)
+        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?
+        .state
+        .groups
+        .clone();
+
+    Ok(HttpResponse::Ok().json(groups))
 }
 
 pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let dms = db::get_dms(&state.pool, user.id).await.map_err(|e| {
-        warn!("Error while getting dms: {}", e);
-        error::ErrorInternalServerError("Error while getting dms")
-    })?;
+    let dms = state
+        .users
+        .get(&user.id)
+        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?
+        .state
+        .dms
+        .clone();
 
-    let dms: Vec<User> = dms
-        .into_iter()
-        .map(|f| {
-            let user_state = state
-                .users
-                .get(&f.id)
-                .map_or(UserState::Offline, |u| u.state.clone());
-
-            User {
-                user: f,
-                state: user_state,
-            }
-        })
-        .collect();
     Ok(HttpResponse::Ok().json(dms))
 }
 
@@ -129,9 +162,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/state")
             .route("/messages", web::get().to(get_messages))
             .route("/friends", web::get().to(get_friends))
+            .route("/friend_requests", web::get().to(get_friend_requets))
             .route("/dms", web::get().to(get_dms))
             .route("/groups", web::get().to(get_groups))
-            .route("/user", web::get().to(get_user))
             .route("/me", web::get().to(me)),
     );
 }

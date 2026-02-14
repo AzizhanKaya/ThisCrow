@@ -1,6 +1,9 @@
 use crate::db;
+use crate::db::user::User;
 use crate::mail;
-use crate::{State, auth::create_jwt};
+use crate::msgpack::MsgPack;
+use crate::{State, middleware::create_jwt};
+use actix_web::Responder;
 use actix_web::http::header;
 use actix_web::{
     Error, HttpResponse, cookie::Cookie, cookie::time::Duration as CookieDuration, error, web,
@@ -26,11 +29,11 @@ struct Login {
     password: String,
 }
 
-async fn login(form: web::Form<Login>, state: State) -> Result<HttpResponse, Error> {
-    let result = db::login(&state.pool, &form.username, &form.password).await;
+async fn login(login: MsgPack<Login>, state: State) -> Result<HttpResponse, Error> {
+    let result = db::user::login(&state.pool, &login.username, &login.password).await;
 
     if let Some(user) = result {
-        let token = create_jwt(user.id, form.username.clone());
+        let token = create_jwt(user.id);
 
         Ok(HttpResponse::Ok()
             .cookie(
@@ -40,7 +43,7 @@ async fn login(form: web::Form<Login>, state: State) -> Result<HttpResponse, Err
                     .max_age(CookieDuration::days(1))
                     .finish(),
             )
-            .json(user))
+            .finish())
     } else {
         Err(error::ErrorUnauthorized("Username or password is wrong."))
     }
@@ -57,8 +60,8 @@ struct Register {
     email: String,
 }
 
-async fn register(form: web::Form<Register>, state: State) -> Result<HttpResponse, Error> {
-    match db::has_registered(&state.pool, &form.username, &form.email).await {
+async fn register(register: MsgPack<Register>, state: State) -> Result<HttpResponse, Error> {
+    match db::user::has_registered(&state.pool, &register.username, &register.email).await {
         Ok(true) => {
             return Err(error::ErrorConflict("This email already in use"));
         }
@@ -77,22 +80,22 @@ async fn register(form: web::Form<Register>, state: State) -> Result<HttpRespons
     if cfg!(debug_assertions) {
         println!(
             r#"http://localhost:8080/api/auth/verify_email?email={}&otp={}"#,
-            form.email, otp
+            register.email, otp
         )
     } else {
         mail::send_email(
-        &form.email,
+        &register.email,
         "ThisCrow Email Verification",
         format!(
             r#"<a href="https://thiscrow.vate.world/api/auth/verify_email?email={}&otp={}">Verify your registration</a>"#,
-            form.email, otp)
+            register.email, otp)
         ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"));
     }
 
     EMAIL_OTP_MAP
         .lock()
         .await
-        .insert(otp, (form.into_inner(), Utc::now()));
+        .insert(otp, (register.0, Utc::now()));
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -117,7 +120,7 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
         return Err(error::ErrorUnauthorized("Expired token"));
     }
 
-    let id = db::register(
+    let id = db::user::register(
         &state.pool,
         &user.username,
         &user.name,
@@ -131,7 +134,7 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
     })?
     .id;
 
-    let token = create_jwt(id, user.username.clone());
+    let token = create_jwt(id);
 
     Ok(HttpResponse::Found()
         .append_header((header::LOCATION, "http://localhost:5173/"))

@@ -4,21 +4,28 @@
 
 use actix_cors::Cors;
 use actix_web::middleware::Logger;
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
-use chrono::Utc;
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, middleware::Compress, web};
 use dashmap::DashMap;
 use dotenv::dotenv;
-use models::AppState;
 use sqlx::PgPool;
+use state::app::AppState;
 use std::env;
+
+use crate::lockmap::LockMap;
+use crate::message::Snowflake;
+use crate::message::service::MessageService;
 
 pub type State = web::Data<AppState>;
 
-mod auth;
 mod db;
+mod id;
+mod lockmap;
 mod mail;
-mod models;
+mod message;
+mod middleware;
+mod msgpack;
 mod route;
+mod state;
 
 #[get("/ping")]
 async fn ping() -> impl Responder {
@@ -42,10 +49,19 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to database");
 
+    let message_store = db::message::MessageStore::open("data/messages")
+        .expect("Failed to open RocksDB message store");
+
+    let messages = MessageService::new(message_store);
+
     let state = web::Data::new(AppState {
-        users: DashMap::new(),
-        voice_chats: DashMap::new(),
+        users: DashMap::with_shard_amount(512),
+        groups: DashMap::with_shard_amount(128),
+        user_locks: LockMap::new(),
+        group_locks: LockMap::new(),
         pool,
+        snowflake: Snowflake::new(1),
+        messages,
     });
 
     HttpServer::new(move || {
@@ -61,6 +77,7 @@ async fn main() -> std::io::Result<()> {
             .max_age(3600);
 
         App::new()
+            .wrap(Compress::default())
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(state.clone())
@@ -71,10 +88,10 @@ async fn main() -> std::io::Result<()> {
                     .configure(route::upload::configure)
                     .service(
                         web::scope("")
-                            .wrap(auth::AuthMiddleware)
-                            .route("/ws", web::get().to(route::message::ws))
+                            .wrap(middleware::AuthMiddleware)
+                            .route("/ws", web::get().to(route::ws::ws))
                             .configure(route::state::configure)
-                            .configure(route::event::configure),
+                            .configure(route::user::configure),
                     ),
             )
     })
