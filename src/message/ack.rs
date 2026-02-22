@@ -3,9 +3,9 @@ use crate::state::user;
 use crate::{id::id as Id, state::group::ChannelType};
 use serde::Serialize;
 
+#[serde_with::skip_serializing_none]
 #[derive(Serialize, Clone, Default)]
-#[serde(rename_all = "snake_case")]
-#[serde(tag = "ack", content = "payload")]
+#[serde(tag = "ack", content = "payload", rename_all = "snake_case")]
 pub enum Ack {
     #[default]
     None,
@@ -38,7 +38,7 @@ pub enum Ack {
     CreatedChannel {
         id: Id,
         name: String,
-        kind: ChannelType,
+        r#type: ChannelType,
     },
     CreatedRole {
         id: Id,
