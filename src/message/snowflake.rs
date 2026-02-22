@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use std::u8;
 use tokio::time::sleep;
 
-const EPOCH: u64 = 1700000000000;
+const EPOCH: u64 = 1767225600000;
 
 const SEQUENCE_BITS: u8 = 12;
 const NODE_BITS: u8 = 8;
@@ -36,7 +36,11 @@ impl Snowflake {
             let last_seq = prev & MAX_SEQUENCE;
 
             let (next_ts, next_seq, wait) = if now < last_ts {
-                panic!("Clock moved backwards");
+                if last_seq == MAX_SEQUENCE {
+                    (last_ts + 1, 0, true)
+                } else {
+                    (last_ts, last_seq + 1, false)
+                }
             } else if now == last_ts {
                 if last_seq == MAX_SEQUENCE {
                     (last_ts + 1, 0, true)
