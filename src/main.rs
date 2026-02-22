@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use actix_cors::Cors;
+use actix_governor::{Governor, GovernorConfigBuilder};
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, middleware::Compress, web};
 use dashmap::DashMap;
@@ -24,6 +25,7 @@ mod mail;
 mod message;
 mod middleware;
 mod msgpack;
+mod ratelimiter;
 mod route;
 mod state;
 
@@ -34,7 +36,12 @@ async fn ping() -> impl Responder {
 
 async fn db_connection() -> Result<PgPool, sqlx::Error> {
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    PgPool::connect(&database_url).await
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .min_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&database_url)
+        .await
 }
 
 #[actix_web::main]
@@ -64,6 +71,13 @@ async fn main() -> std::io::Result<()> {
         messages,
     });
 
+    let _governor = GovernorConfigBuilder::default()
+        .seconds_per_request(10)
+        .burst_size(20)
+        .key_extractor(ratelimiter::UserKeyExtractor)
+        .finish()
+        .unwrap();
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://localhost:5173")
@@ -83,15 +97,16 @@ async fn main() -> std::io::Result<()> {
             .app_data(state.clone())
             .service(
                 web::scope("/api")
+                    // .wrap(Governor::new(&governor))
                     .configure(route::auth::configure)
                     .service(ping)
-                    .configure(route::upload::configure)
                     .service(
                         web::scope("")
                             .wrap(middleware::AuthMiddleware)
+                            .configure(route::upload::configure)
                             .route("/ws", web::get().to(route::ws::ws))
                             .configure(route::state::configure)
-                            .configure(route::user::configure),
+                            .configure(route::info::configure),
                     ),
             )
     })
