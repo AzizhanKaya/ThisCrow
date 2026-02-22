@@ -1,7 +1,7 @@
 use crate::id::id;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sqlx::{FromRow, Row, postgres::PgRow};
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message<T> {
@@ -10,13 +10,14 @@ pub struct Message<T> {
     pub from: id,
     pub to: id,
     pub data: T,
+    #[serde(with = "chrono::serde::ts_milliseconds")]
     pub time: DateTime<Utc>,
     #[serde(flatten)]
     pub r#type: MessageType,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug, Copy)]
-#[serde(rename_all = "lowercase", tag = "type", content = "server_id")]
+#[serde(rename_all = "lowercase", tag = "type", content = "group_id")]
 pub enum MessageType {
     Direct,
     Group(id),
@@ -36,40 +37,6 @@ impl<T> Message<T> {
             r#type: self.r#type,
             data: f(self.data),
         }
-    }
-}
-
-impl<'r, T> FromRow<'r, PgRow> for Message<T>
-where
-    T: DeserializeOwned,
-{
-    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-        let message_id: id = row.try_get("id")?;
-        let from: id = row.try_get("from")?;
-        let to: id = row.try_get("to")?;
-        let time: chrono::DateTime<Utc> = row.try_get("time")?;
-
-        let data_value: serde_json::Value = row.try_get("data")?;
-        let data: T =
-            serde_json::from_value(data_value).map_err(|e| sqlx::Error::ColumnDecode {
-                index: "data".into(),
-                source: Box::new(e),
-            })?;
-
-        let group_id: Option<id> = row.try_get("group_id")?;
-        let r#type = match group_id {
-            Some(gid) => MessageType::Group(gid),
-            None => MessageType::Direct,
-        };
-
-        Ok(Self {
-            id: message_id,
-            from,
-            to,
-            data,
-            time,
-            r#type,
-        })
     }
 }
 
