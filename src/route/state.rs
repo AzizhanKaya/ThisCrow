@@ -1,33 +1,17 @@
 use crate::id::id;
+use crate::message::Message;
+use crate::msgpack::MsgPack;
 use crate::state::group::Permissions;
 use crate::{State, middleware::JwtUser};
-use actix_web::{Error, HttpResponse, error, web};
+use actix_web::{Error, error, web};
 use chrono::{DateTime, Utc};
 use log::warn;
+use rmpv::Value;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-#[derive(Serialize)]
-struct Me {
-    id: id,
-    version: id,
-    username: String,
-    avatar: Option<String>,
-}
-
-pub async fn me(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
-    let user = state
-        .users
-        .get(&user.id)
-        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?;
-
-    let me = Me {
-        id: user.id,
-        version: user.get_version(),
-        username: user.state.username.clone(),
-        avatar: user.state.avatar.clone(),
-    };
-
-    Ok(HttpResponse::Ok().json(me))
+pub async fn me(user: web::ReqData<JwtUser>) -> Result<MsgPack<JwtUser>, Error> {
+    Ok(MsgPack(user.into_inner()))
 }
 
 #[derive(Deserialize, Debug)]
@@ -42,7 +26,7 @@ pub async fn get_messages(
     state: State,
     user: web::ReqData<JwtUser>,
     query: web::Query<MessagesQuery>,
-) -> Result<HttpResponse, Error> {
+) -> Result<MsgPack<Vec<Message<Value>>>, Error> {
     let messages = state
         .messages
         .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
@@ -51,7 +35,7 @@ pub async fn get_messages(
             error::ErrorInternalServerError("Error while getting messages")
         })?;
 
-    Ok(HttpResponse::Ok().json(messages))
+    Ok(MsgPack(messages))
 }
 
 #[derive(Deserialize, Debug)]
@@ -67,7 +51,7 @@ pub async fn get_channel_messages(
     state: State,
     user: web::ReqData<JwtUser>,
     query: web::Query<ChannelMessagesQuery>,
-) -> Result<HttpResponse, Error> {
+) -> Result<MsgPack<Vec<Message<Value>>>, Error> {
     state
         .groups
         .get(&query.group_id)
@@ -92,10 +76,13 @@ pub async fn get_channel_messages(
             error::ErrorInternalServerError("Error while getting messages")
         })?;
 
-    Ok(HttpResponse::Ok().json(messages))
+    Ok(MsgPack(messages))
 }
 
-pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+pub async fn get_friends(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<MsgPack<HashSet<id>>, Error> {
     let friends = state
         .users
         .get(&user.id)
@@ -104,7 +91,7 @@ pub async fn get_friends(state: State, user: web::ReqData<JwtUser>) -> Result<Ht
         .friends
         .clone();
 
-    Ok(HttpResponse::Ok().json(friends))
+    Ok(MsgPack(friends))
 }
 
 #[derive(Serialize)]
@@ -117,13 +104,13 @@ pub struct FriendRequets {
 pub async fn get_friend_requets(
     state: State,
     user: web::ReqData<JwtUser>,
-) -> Result<HttpResponse, Error> {
+) -> Result<MsgPack<FriendRequets>, Error> {
     if let Some(user) = state.users.get(&user.id) {
         let incoming = user.state.friend_requests.clone();
         let outgoing = user.state.friend_requests_sent.clone();
         let version = user.get_version();
 
-        return Ok(HttpResponse::Ok().json(FriendRequets {
+        return Ok(MsgPack(FriendRequets {
             incoming,
             outgoing,
             version,
@@ -133,7 +120,10 @@ pub async fn get_friend_requets(
     Err(error::ErrorUnauthorized("Session has not initialized"))
 }
 
-pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+pub async fn get_groups(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<MsgPack<Vec<id>>, Error> {
     let groups = state
         .users
         .get(&user.id)
@@ -142,10 +132,10 @@ pub async fn get_groups(state: State, user: web::ReqData<JwtUser>) -> Result<Htt
         .groups
         .clone();
 
-    Ok(HttpResponse::Ok().json(groups))
+    Ok(MsgPack(groups))
 }
 
-pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<HttpResponse, Error> {
+pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<MsgPack<Vec<id>>, Error> {
     let dms = state
         .users
         .get(&user.id)
@@ -154,7 +144,7 @@ pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<HttpRe
         .dms
         .clone();
 
-    Ok(HttpResponse::Ok().json(dms))
+    Ok(MsgPack(dms))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

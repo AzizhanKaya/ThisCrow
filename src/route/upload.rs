@@ -1,5 +1,6 @@
+use crate::msgpack::MsgPack;
 use actix_multipart::Multipart;
-use actix_web::{Error, HttpResponse, error, web};
+use actix_web::{Error, error, web};
 use futures_util::StreamExt as _;
 use rand::distr::Alphanumeric;
 use rand::{Rng, rng};
@@ -92,10 +93,10 @@ async fn save_files(mut payload: Multipart) -> Result<Vec<UploadInfo>, Error> {
     Ok(saved_files)
 }
 
-async fn upload(payload: Multipart) -> Result<HttpResponse, Error> {
+async fn upload(payload: Multipart) -> Result<MsgPack<Vec<UploadInfo>>, Error> {
     let saved_files = save_files(payload).await?;
 
-    Ok(HttpResponse::Ok().json(saved_files))
+    Ok(MsgPack(saved_files))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
