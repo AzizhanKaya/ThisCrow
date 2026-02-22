@@ -11,7 +11,7 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "event", content = "payload")]
 pub enum Event {
@@ -62,11 +62,11 @@ pub enum Event {
     /* ===== CHANNEL ===== */
     CreateChannel {
         name: String,
-        kind: ChannelType,
+        r#type: ChannelType,
     },
     UpdateChannel {
         name: Option<String>,
-        order: Option<u64>,
+        r#type: Option<ChannelType>,
     },
     DeleteChannel,
 
@@ -80,9 +80,14 @@ pub enum Event {
     /* ===== MODERATION ===== */
     KickUser,
     BanUser,
+
+    // ==== webRTC ====
+    Offer(String),
+    Answer(String),
+    IceCandidate(String),
 }
 
-pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> {
+pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
     match message.r#type {
         MessageType::Info => {
             match message.data {
@@ -103,7 +108,6 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                             .friends
                             .iter()
                             .cloned()
-                            .chain(std::iter::once(message.from))
                             .chain(
                                 user.state
                                     .groups
@@ -125,7 +129,9 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                             ..Message::default()
                         };
 
-                        send_message_all(state, ack, all_users.into_iter().collect());
+                        user.send_message(&ack);
+
+                        send_message_all(&state, ack, all_users.into_iter().collect());
                     }
                 }
 
@@ -138,7 +144,6 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                             .friends
                             .iter()
                             .cloned()
-                            .chain(std::iter::once(message.from))
                             .chain(
                                 user.state
                                     .groups
@@ -152,12 +157,14 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
 
                         let ack = Message {
                             id: user.next_version(),
-                            to: message.from,
+                            from: message.from,
                             data: Ack::ChangedStatus(change_status),
                             ..Message::default()
                         };
 
-                        send_message_all(state, ack, all_users.into_iter().collect());
+                        user.send_message(&ack);
+
+                        send_message_all(&state, ack, all_users.into_iter().collect());
                     }
                 }
                 /* ===== FRIEND ===== */
@@ -179,7 +186,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                         };
 
                         to_user.state.friend_requests.push(from);
-                        to_user.send_message(ack);
+                        to_user.send_message(&ack);
                     }
 
                     if let Some(mut from_user) = state.users.get_mut(&from) {
@@ -191,7 +198,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                         };
 
                         from_user.state.friend_requests_sent.push(to);
-                        from_user.send_message(ack);
+                        from_user.send_message(&ack);
                     }
                 }
                 Event::FriendAccept => {
@@ -211,7 +218,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                             };
 
                             from_user.state.friends.insert(to);
-                            from_user.send_message(ack);
+                            from_user.send_message(&ack);
                         }
 
                         if let Some(mut to_user) = state.users.get_mut(&to) {
@@ -223,7 +230,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                             };
 
                             to_user.state.friends.insert(from);
-                            to_user.send_message(ack);
+                            to_user.send_message(&ack);
                         }
                     }
                 }
@@ -245,7 +252,8 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                         };
 
                         from_user.state.friends.remove(&to);
-                        from_user.send_message(ack);
+                        from_user.state.friend_requests_sent.retain(|&i| i != to);
+                        from_user.send_message(&ack);
                     }
 
                     if let Some(mut to_user) = state.users.get_mut(&to) {
@@ -257,7 +265,8 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                         };
 
                         to_user.state.friends.remove(&from);
-                        to_user.send_message(ack);
+                        to_user.state.friend_requests.retain(|&i| i != from);
+                        to_user.send_message(&ack);
                     }
                 }
                 _ => return Err(anyhow!("Invalid event")),
@@ -272,7 +281,8 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
                         let _write_guard = state.group_locks.write(group_id).await;
 
                         if !state.groups.contains_key(&group_id) {
-                            let group: Group = db::group::init_group(&state.pool, group_id).await?;
+                            let group: Group =
+                                db::group::init_group(&state.pool, group_id).await?.into();
                             state.groups.insert(group_id, group);
                         }
                     }
@@ -286,12 +296,12 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
 
                             let ack = Message {
                                 id: group.get_version(),
-                                to: message.from,
+                                from: message.from,
                                 data: Ack::Subscribed(group.clone()),
                                 ..Message::default()
                             };
 
-                            user.send_message(ack);
+                            user.send_message(&ack);
                         }
                     }
                     return Ok(());
@@ -306,12 +316,12 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
 
                             let ack = Message {
                                 id: group.get_version(),
-                                to: message.from,
+                                from: message.from,
                                 data: Ack::Unsubscribed(group_id),
                                 ..Message::default()
                             };
 
-                            user.send_message(ack);
+                            user.send_message(&ack);
                         }
                         return Ok(());
                     } else {
@@ -339,7 +349,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
 
                         Message {
                             id: group.get_version(),
-                            to: message.from,
+                            from: message.from,
                             data: Ack::UpdatedGroup {
                                 id: group_id,
                                 name,
@@ -745,7 +755,7 @@ pub async fn handle_event(state: &State, message: Message<Event>) -> Result<()> 
             };
 
             if let Some(group) = state.groups.get(&group_id) {
-                group.notify(ack, state);
+                group.notify(ack, &state);
             } else {
                 return Err(anyhow!("Group not found"));
             }
