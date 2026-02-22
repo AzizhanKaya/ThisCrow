@@ -13,7 +13,7 @@ use std::pin::Pin;
 #[macro_export]
 macro_rules! msgpack {
     ($val:expr) => {
-        rmp_serde::to_vec(&$val).unwrap()
+        rmp_serde::to_vec_named(&$val).unwrap()
     };
 }
 
@@ -69,7 +69,7 @@ where
     type Body = actix_web::body::BoxBody;
 
     fn respond_to(self, _req: &HttpRequest) -> HttpResponse {
-        match rmp_serde::to_vec(&self.0) {
+        match rmp_serde::to_vec_named(&self.0) {
             Ok(body) => HttpResponse::Ok()
                 .insert_header((CONTENT_TYPE, "application/msgpack"))
                 .body(body),
