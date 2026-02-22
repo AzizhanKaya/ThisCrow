@@ -1,7 +1,15 @@
-use crate::id::id;
-use crate::state::group::Group;
 use anyhow::Result;
 use sqlx::{Pool, Postgres};
+
+type id = crate::id::id;
+
+#[derive(sqlx::FromRow)]
+pub struct Group {
+    pub id: id,
+    pub icon: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+}
 
 pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<Group, sqlx::Error> {
     todo!("init_group");
@@ -72,6 +80,34 @@ pub async fn get_groups(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, s
         WHERE gu.user_id = $1
         "#,
         *user_id as i64
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn get_groups_info(
+    pool: &Pool<Postgres>,
+    group_ids: Vec<id>,
+) -> Result<Vec<Group>, sqlx::Error> {
+    if group_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as!(
+        Group,
+        r#"
+        SELECT 
+            g.id,
+            g.icon,
+            g.name,
+            g.description
+        FROM groups g
+        WHERE g.id = ANY($1)
+        "#,
+        &group_ids
+            .iter()
+            .map(|i| i64::from(*i))
+            .collect::<Vec<i64>>()
     )
     .fetch_all(pool)
     .await

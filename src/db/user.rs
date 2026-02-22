@@ -38,7 +38,7 @@ pub async fn login(pool: &Pool<Postgres>, username: &str, password: &str) -> Opt
     )
     .fetch_optional(pool)
     .await
-    .unwrap()?;
+    .ok()??;
 
     let parsed_hash = PasswordHash::new(&user.password_hash).ok()?;
 
@@ -98,7 +98,7 @@ pub async fn has_registered(pool: &Pool<Postgres>, username: &str, email: &str) 
 }
 
 pub async fn get_friends(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
-    sqlx::query_scalar!(
+    let friends = sqlx::query_scalar!(
         r#"
         SELECT u.id AS "id:id"
         FROM users u    
@@ -111,7 +111,9 @@ pub async fn get_friends(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, 
         *user_id as i64
     )
     .fetch_all(pool)
-    .await
+    .await;
+
+    friends
 }
 
 pub async fn friend_requests(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
@@ -218,12 +220,10 @@ pub async fn friend_accept(
     Ok(true)
 }
 
-pub async fn friend_remove(
-    pool: &Pool<Postgres>,
-    user_id: id,
-    friend_id: id,
-) -> Result<(), sqlx::Error> {
-    let (user_1, user_2) = user_id.sort_pair(friend_id);
+pub async fn friend_remove(pool: &Pool<Postgres>, from: id, to: id) -> Result<(), sqlx::Error> {
+    let (user_1, user_2) = from.sort_pair(to);
+
+    let mut tx = pool.begin().await?;
 
     sqlx::query!(
         r#"
@@ -233,9 +233,21 @@ pub async fn friend_remove(
         *user_1 as i64,
         *user_2 as i64
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
+    sqlx::query!(
+        r#"
+        DELETE FROM friend_requests
+        WHERE "from" = $1 AND "to" = $2
+        "#,
+        *from as i64,
+        *to as i64
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -257,7 +269,7 @@ pub async fn are_friends(
     Ok(exists)
 }
 
-pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Option<User> {
+pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as!(
         User,
         r#"
@@ -268,7 +280,22 @@ pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Option<User> {
     )
     .fetch_optional(pool)
     .await
-    .ok()?
+}
+
+pub async fn get_user_by_username(
+    pool: &Pool<Postgres>,
+    username: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as!(
+        User,
+        r#"
+        SELECT * FROM users
+        WHERE username = $1
+        "#,
+        username
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn get_users_like(
