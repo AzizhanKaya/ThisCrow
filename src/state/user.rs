@@ -1,17 +1,21 @@
 use crate::{id::id, message::Message, msgpack};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashSet;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct Session {
     pub id: id,
     pub state: State,
-    pub tx: UnboundedSender<Bytes>,
+    pub connections: Vec<Connection>,
 }
 
-#[derive(Clone, Serialize)]
+pub struct Connection {
+    pub reciver: UnboundedSender<Bytes>,
+    pub connection_id: usize,
+}
+
+#[derive(Clone, Serialize, Debug)]
 pub struct State {
     pub id: id,
     pub version: id,
@@ -26,7 +30,7 @@ pub struct State {
     pub dms: Vec<id>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub enum Status {
     #[default]
     Online,
@@ -45,10 +49,12 @@ impl Session {
     }
 
     pub fn send_bytes(&self, message: Bytes) {
-        self.tx.send(message);
+        for connection in self.connections.iter() {
+            connection.reciver.send(message.clone());
+        }
     }
 
-    pub fn send_message<T: Serialize>(&self, message: Message<T>) {
-        self.tx.send(Bytes::from(msgpack!(message)));
+    pub fn send_message<T: Serialize>(&self, message: &Message<T>) {
+        self.send_bytes(Bytes::from(msgpack!(message)));
     }
 }

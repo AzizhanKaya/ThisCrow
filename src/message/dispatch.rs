@@ -1,5 +1,6 @@
 use super::ack::Ack;
 use super::event;
+use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::{Event, Message, MessageType};
 use crate::state::group::Permissions;
@@ -22,7 +23,12 @@ struct MultiData {
     text: Option<String>,
 }
 
-pub async fn handle_bytes(user_id: id, state: &State, bytes: Bytes) -> Result<()> {
+pub async fn handle_bytes(
+    user_id: id,
+    state: &State,
+    bytes: Bytes,
+    connection_id: usize,
+) -> Result<()> {
     if let Ok(mut message) = rmp_serde::from_slice::<Message<Text>>(&bytes) {
         let message_id = message.id;
         let now = Utc::now();
@@ -30,15 +36,25 @@ pub async fn handle_bytes(user_id: id, state: &State, bytes: Bytes) -> Result<()
         message.time = now;
         message.id = id::from(state.snowflake.generate().await);
 
-        let ack = Message {
+        let ack = Bytes::from(msgpack!(Message {
             id: message.id,
             data: Ack::Received(message_id),
             time: now,
-            to: user_id,
+            from: user_id,
+            to: message.to,
             ..Default::default()
-        };
+        }));
 
-        send_message(&state, ack);
+        if let Some(user) = state.users.get(&user_id) {
+            let message = Bytes::from(msgpack!(message));
+            for connection in user.connections.iter() {
+                if connection.connection_id == connection_id {
+                    connection.reciver.send(ack.clone());
+                    continue;
+                }
+                connection.reciver.send(message.clone());
+            }
+        }
 
         dispatch_message(state, message);
 
@@ -50,7 +66,14 @@ pub async fn handle_bytes(user_id: id, state: &State, bytes: Bytes) -> Result<()
         event.from = user_id;
         event.time = Utc::now();
 
-        event::handle_event(state, event).await?;
+        let state = state.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = event::handle_event(state, event).await {
+                eprintln!("Error while handling event: {}", e);
+            }
+        });
+
         return Ok(());
     }
 
@@ -69,24 +92,28 @@ pub async fn handle_bytes(user_id: id, state: &State, bytes: Bytes) -> Result<()
             ..Default::default()
         };
 
-        send_message(&state, ack);
+        send_message(state, ack);
 
         dispatch_message(state, message);
 
         return Ok(());
     }
 
-    anyhow::bail!("Unkown message struct: {:?}", bytes);
+    anyhow::bail!(
+        "Unkown message struct: {:?}",
+        rmp_serde::from_slice::<Message<Event>>(&bytes)
+    );
 }
 
 fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) {
     if matches!(message.r#type, MessageType::Direct | MessageType::Group(_)) {
-        state.messages.write(message.clone().into());
+        let write: StoredMessage = message.clone().into();
+        state.messages.write(write.clone());
     }
 
     match message.r#type {
         MessageType::Direct | MessageType::Info => {
-            send_message(state, message.clone());
+            send_message(state, message);
         }
         MessageType::Group(group_id) | MessageType::InfoGroup(group_id) => {
             send_group_message(state, message, group_id);
@@ -97,7 +124,10 @@ fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) {
 
 pub fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     if let Some(to) = state.users.get(&message.to) {
-        to.tx.send(Bytes::from(msgpack!(message)));
+        let message = Bytes::from(msgpack!(message));
+        for connection in to.connections.iter() {
+            connection.reciver.send(message.clone());
+        }
     }
 }
 
@@ -108,7 +138,9 @@ pub fn send_message_all<T: Serialize>(state: &State, message: Message<T>, user_i
         .into_iter()
         .filter_map(|user_id| state.users.get(&user_id))
         .for_each(|user| {
-            user.tx.send(message.clone());
+            for connection in user.connections.iter() {
+                connection.reciver.send(message.clone());
+            }
         });
 }
 

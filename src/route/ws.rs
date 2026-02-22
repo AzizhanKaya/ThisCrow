@@ -16,7 +16,7 @@ use actix_ws::Session;
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::Utc;
-
+use dashmap::Entry;
 use log::warn;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -32,6 +32,13 @@ pub async fn ws(
 
     let user_id = user.id;
 
+    let _user_lock = state.user_locks.write(user_id).await;
+
+    if let Some(mut user) = state.users.get_mut(&user_id) {
+        add_connection(session, user.value_mut(), msg_stream, &state);
+        return Ok(response);
+    }
+
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
 
     actix_web::rt::spawn({
@@ -44,40 +51,36 @@ pub async fn ws(
                     .is_err()
                     || rx.len() > 100
                 {
-                    close_session(user_id, state).await;
+                    close_session(user_id, state, 0).await;
                     break;
                 }
             }
         }
     });
 
-    let _user_lock = state.user_locks.read(user_id).await;
+    let (user_res, groups_res, friends_res, incoming_res, outgoing_res) = tokio::join!(
+        db::user::get_user(&state.pool, user_id),
+        db::group::get_groups(&state.pool, user_id),
+        db::user::get_friends(&state.pool, user_id),
+        db::user::friend_requests(&state.pool, user_id),
+        db::user::outgoing_friend_requests(&state.pool, user_id)
+    );
 
-    let friends: HashSet<id> = db::user::get_friends(&state.pool, user_id)
-        .await
-        .map_err(|e| error::ErrorInternalServerError(e))?
+    let user = user_res
+        .map_err(error::ErrorInternalServerError)?
+        .ok_or(error::ErrorInternalServerError("User not found"))?;
+
+    let groups: Vec<id> = groups_res.map_err(error::ErrorInternalServerError)?;
+    let friends: HashSet<id> = friends_res
+        .map_err(error::ErrorInternalServerError)?
         .into_iter()
         .collect();
-
-    let groups: Vec<id> = db::group::get_groups(&state.pool, user_id)
-        .await
-        .map_err(|e| error::ErrorInternalServerError(e))?;
+    let incoming = incoming_res.map_err(error::ErrorInternalServerError)?;
+    let outgoing = outgoing_res.map_err(error::ErrorInternalServerError)?;
 
     let dms: Vec<id> = state
         .messages
         .get_dms(user_id)
-        .map_err(|e| error::ErrorInternalServerError(e))?;
-
-    let user = db::user::get_user(&state.pool, user_id)
-        .await
-        .ok_or(error::ErrorUnauthorized(""))?;
-
-    let incoming = db::user::friend_requests(&state.pool, user_id)
-        .await
-        .map_err(|e| error::ErrorInternalServerError(e))?;
-
-    let outgoing = db::user::outgoing_friend_requests(&state.pool, user_id)
-        .await
         .map_err(|e| error::ErrorInternalServerError(e))?;
 
     let user = user::State {
@@ -96,7 +99,10 @@ pub async fn ws(
 
     let user_session = user::Session {
         id: user_id,
-        tx: tx,
+        connections: vec![user::Connection {
+            reciver: tx,
+            connection_id: 0,
+        }],
         state: user.clone(),
     };
 
@@ -115,9 +121,66 @@ pub async fn ws(
         user_id,
         msg_stream,
         state.clone(),
+        0,
     ));
 
     Ok(response)
+}
+
+fn add_connection(
+    session: Session,
+    user: &mut user::Session,
+    msg_stream: MessageStream,
+    state: &State,
+) {
+    let user_id = user.id;
+    let connection_id = user
+        .connections
+        .iter()
+        .map(|c| c.connection_id)
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+
+    actix_web::rt::spawn({
+        let mut session = session.clone();
+        let state = state.clone();
+        async move {
+            while let Some(msg) = rx.recv().await {
+                if timeout(Duration::from_secs(5), session.binary(msg))
+                    .await
+                    .is_err()
+                    || rx.len() > 100
+                {
+                    close_session(user_id, state, connection_id).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let session_initialized = Message {
+        to: user_id,
+        data: Ack::Initialized(user.state.clone()),
+        ..Default::default()
+    };
+
+    tx.send(Bytes::from(msgpack!(session_initialized)));
+
+    user.connections.push(user::Connection {
+        reciver: tx,
+        connection_id,
+    });
+
+    actix_web::rt::spawn(handle_connection(
+        session,
+        user_id,
+        msg_stream,
+        state.clone(),
+        connection_id,
+    ));
 }
 
 async fn handle_connection(
@@ -125,36 +188,57 @@ async fn handle_connection(
     user_id: id,
     msg_stream: MessageStream,
     state: State,
+    connection_id: usize,
 ) {
     let mut stream = msg_stream.aggregate_continuations();
-    while let Some(Ok(msg)) = stream.recv().await {
-        match msg {
-            WsMessage::Binary(bytes) => {
-                if let Err(e) = dispatch::handle_bytes(user_id, &state, bytes).await {
-                    warn!("Error handling message from user {}: {:#?}", user_id, e);
-                    session
-                        .binary(Bytes::from(msgpack!(Ack::Error(e.to_string()))))
-                        .await;
+
+    loop {
+        match stream.recv().await {
+            Some(Ok(msg)) => match msg {
+                WsMessage::Binary(bytes) => {
+                    if let Err(e) =
+                        dispatch::handle_bytes(user_id, &state, bytes, connection_id).await
+                    {
+                        warn!("Error handling message from user {}: {:#?}", user_id, e);
+                        session
+                            .binary(Bytes::from(msgpack!(Ack::Error(e.to_string()))))
+                            .await;
+                    }
                 }
-            }
-            WsMessage::Close(_) => {
-                close_session(user_id, state).await;
+                WsMessage::Ping(ping) => {
+                    session.pong(&ping).await;
+                }
+                WsMessage::Close(_) => break,
+                _ => {
+                    warn!("Unhandled WebSocket message type from user {}", user_id);
+                }
+            },
+            Some(Err(e)) => {
+                println!("Stream hatası: {:?}", e);
                 break;
             }
-            WsMessage::Ping(ping) => {
-                session.pong(&ping).await;
-            }
-            _ => {
-                warn!("Unhandled WebSocket message type from user {}", user_id);
+            None => {
+                println!("Stream kapandı");
+                break;
             }
         }
     }
+    close_session(user_id, state, connection_id).await;
 }
 
-async fn close_session(user_id: id, state: State) {
-    state.users.remove(&user_id);
+async fn close_session(user_id: id, state: State, connection_id: usize) {
+    if let Entry::Occupied(mut entry) = state.users.entry(user_id) {
+        let user = entry.get_mut();
 
-    if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
-        warn!("Failed to update last_seen for {}: {:?}", user_id, e);
+        if user.connections.len() <= 1 {
+            entry.remove();
+
+            if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
+                warn!("Failed to update last_seen for {}: {:?}", user_id, e);
+            }
+        } else {
+            user.connections
+                .retain(|c| c.connection_id != connection_id);
+        }
     }
 }
