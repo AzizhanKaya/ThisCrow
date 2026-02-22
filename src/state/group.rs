@@ -1,4 +1,5 @@
 use crate::State;
+use crate::db;
 use crate::id::id;
 use crate::message::Ack;
 use crate::message::Message;
@@ -47,15 +48,30 @@ type ChannelId = id;
 
 #[derive(Serialize, Clone)]
 pub struct Group {
-    id: id,
-    icon: Option<String>,
-    name: String,
-    version: id,
+    pub id: id,
+    pub icon: Option<String>,
+    pub name: String,
+    pub version: id,
     pub users: HashMap<UserId, User>,
     roles: HashMap<RoleId, Role>,
     channels: HashMap<ChannelId, Channel>,
     #[serde(skip)]
     pub subscribers: HashSet<UserId>,
+}
+
+impl From<db::group::Group> for Group {
+    fn from(value: db::group::Group) -> Self {
+        Self {
+            id: value.id,
+            icon: value.icon,
+            name: value.name,
+            version: id(0),
+            users: HashMap::new(),
+            roles: HashMap::new(),
+            channels: HashMap::new(),
+            subscribers: HashSet::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -82,7 +98,7 @@ struct Channel {
     permission_overrides: Vec<PermissionOverride>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelType {
     Voice,

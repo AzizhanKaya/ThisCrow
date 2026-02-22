@@ -1,12 +1,11 @@
 use crate::db::message::MessageStore;
 use crate::db::message::StoredMessage;
 use crate::id::id;
-use crate::message::{Message, MessageType};
+use crate::message::Message;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use serde::Serialize;
-use serde_json::Value;
+use rmpv::Value;
 use std::collections::VecDeque;
 
 const CACHE_SIZE: usize = 50;
@@ -119,11 +118,9 @@ impl MessageService {
     ) -> anyhow::Result<Vec<Message<Value>>> {
         let limit = len.unwrap_or(50);
 
-        let db_messages = self
+        let mut messages = self
             .store
             .get_direct_messages(user1, user2, Some(limit), start, end)?;
-
-        let mut messages: Vec<_> = db_messages.into_iter().collect();
 
         messages.sort_by_key(|m| m.time);
 
@@ -131,6 +128,6 @@ impl MessageService {
     }
 
     pub fn get_dms(&self, user_id: id) -> Result<Vec<id>> {
-        todo!()
+        self.store.get_dms(user_id)
     }
 }

@@ -1,5 +1,14 @@
 {
     "[rust]": {
         "editor.formatOnSave": false
+    },
+    "eslint.workingDirectories": [
+        "./frontend"
+    ],
+    "typescript.tsdk": "frontend/node_modules/typescript/lib",
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/dist": true,
+        "**/target": true
     }
 }
