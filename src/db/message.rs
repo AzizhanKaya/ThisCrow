@@ -3,12 +3,11 @@ use crate::message::{Message, MessageType};
 use crate::msgpack;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use rmpv::Value;
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::path::Path;
-use std::sync::Arc;
 
 pub type RocksDB = DBWithThreadMode<MultiThreaded>;
 
@@ -33,7 +32,7 @@ impl<T: DeserializeOwned> From<StoredMessage> for Message<T> {
             id: stored.id,
             from: stored.from,
             to: stored.to,
-            data: serde_json::from_value(stored.data).unwrap(),
+            data: rmpv::ext::from_value(stored.data).unwrap(),
             time: stored.time,
             r#type: match stored.group_id {
                 Some(gid) => MessageType::Group(gid),
@@ -45,11 +44,16 @@ impl<T: DeserializeOwned> From<StoredMessage> for Message<T> {
 
 impl<T: Serialize> From<Message<T>> for StoredMessage {
     fn from(message: Message<T>) -> Self {
+        let buf = rmp_serde::to_vec_named(&message.data).expect("Message data serileştirilemedi");
+
+        let data_value: rmpv::Value =
+            rmp_serde::from_slice(&buf).expect("Byte dizisi rmpv::Value'ya dönüştürülemedi");
+
         StoredMessage {
             id: message.id,
             from: message.from,
             to: message.to,
-            data: serde_json::to_value(message.data).unwrap(),
+            data: data_value,
             time: message.time,
             group_id: match message.r#type {
                 MessageType::Group(gid) | MessageType::InfoGroup(gid) => Some(gid),
@@ -60,7 +64,7 @@ impl<T: Serialize> From<Message<T>> for StoredMessage {
 }
 
 pub struct MessageStore {
-    db: Arc<RocksDB>,
+    db: RocksDB,
 }
 
 impl MessageStore {
@@ -82,7 +86,7 @@ impl MessageStore {
         let db =
             RocksDB::open_cf_descriptors(&opts, path, cfs).context("Failed to open RocksDB")?;
 
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self { db })
     }
 
     pub fn save_message(&self, message: StoredMessage) -> Result<()> {
@@ -204,7 +208,7 @@ impl MessageStore {
 
             if let Some(msg_id) = Self::box_to_u64(&value) {
                 if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id.to_be_bytes())? {
-                    let stored: StoredMessage = serde_json::from_slice(&msg_bytes)?;
+                    let stored: StoredMessage = rmp_serde::from_slice(&msg_bytes)?;
                     messages.push(stored.into());
                 }
             }
@@ -261,7 +265,7 @@ impl MessageStore {
 
             if let Some(msg_id) = Self::box_to_u64(&value) {
                 if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id.to_be_bytes())? {
-                    let stored: StoredMessage = serde_json::from_slice(&msg_bytes)?;
+                    let stored: StoredMessage = rmp_serde::from_slice(&msg_bytes)?;
                     messages.push(stored.into());
                 }
             }
@@ -276,13 +280,13 @@ impl MessageStore {
         Ok(messages)
     }
 
-    pub fn get_dm_user_ids(&self, user_id: id) -> Result<Vec<(id, DateTime<Utc>)>> {
+    pub fn get_dms(&self, user_id: id) -> Result<Vec<id>> {
         let cf_user_dms = self.db.cf_handle(CF_USER_DMS).unwrap();
 
         let prefix = format!("{}:", *user_id);
         let iter = self.db.prefix_iterator_cf(&cf_user_dms, prefix.as_bytes());
 
-        let mut dm_users: Vec<(id, DateTime<Utc>)> = Vec::new();
+        let mut temp_dm_users: Vec<(id, DateTime<Utc>)> = Vec::new();
 
         for item in iter {
             let (key, value) = item?;
@@ -292,27 +296,17 @@ impl MessageStore {
                 if let Ok(other_id) = other_id_str.parse::<u64>() {
                     if let Some(ts_millis) = Self::box_to_i64(&value) {
                         if let Some(time) = DateTime::from_timestamp_millis(ts_millis) {
-                            dm_users.push((id(other_id), time));
+                            temp_dm_users.push((id(other_id), time));
                         }
                     }
                 }
             }
         }
 
-        dm_users.sort_by(|a, b| b.1.cmp(&a.1));
+        temp_dm_users.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let dm_users: Vec<id> = temp_dm_users.into_iter().map(|(i, _)| i).collect();
 
         Ok(dm_users)
-    }
-
-    pub fn db(&self) -> &Arc<RocksDB> {
-        &self.db
-    }
-}
-
-impl Clone for MessageStore {
-    fn clone(&self) -> Self {
-        Self {
-            db: Arc::clone(&self.db),
-        }
     }
 }
