@@ -36,9 +36,9 @@ pub async fn login(pool: &Pool<Postgres>, username: &str, password: &str) -> Opt
         "#,
         username
     )
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await
-    .ok()??;
+    .ok()?;
 
     let parsed_hash = PasswordHash::new(&user.password_hash).ok()?;
 
@@ -119,10 +119,9 @@ pub async fn get_friends(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, 
 pub async fn friend_requests(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
     sqlx::query_scalar!(
         r#"
-        SELECT u.id AS "id:id"
-        FROM users u
-        JOIN friend_requests fr ON fr."from" = u.id
-        WHERE fr."to" = $1
+        SELECT "from" AS "id:id"
+        FROM friend_requests
+        WHERE "to" = $1
         "#,
         *user_id as i64
     )
@@ -134,19 +133,16 @@ pub async fn outgoing_friend_requests(
     pool: &Pool<Postgres>,
     user_id: id,
 ) -> Result<Vec<id>, sqlx::Error> {
-    let users: Vec<id> = sqlx::query_scalar!(
+    sqlx::query_scalar!(
         r#"
-        SELECT u.id AS "id:id"
-        FROM users u
-        JOIN friend_requests fr ON fr."to" = u.id
-        WHERE fr."from" = $1
+        SELECT "to" AS "id:id"
+        FROM friend_requests
+        WHERE "from" = $1
         "#,
         *user_id as i64
     )
     .fetch_all(pool)
-    .await?;
-
-    Ok(users)
+    .await
 }
 
 pub async fn friend_request(pool: &Pool<Postgres>, from: id, to: id) -> Result<(), sqlx::Error> {
@@ -165,23 +161,21 @@ pub async fn friend_request(pool: &Pool<Postgres>, from: id, to: id) -> Result<(
     Ok(())
 }
 
-pub async fn friend_accept(
-    pool: &Pool<Postgres>,
-    user_id: id,
-    friend_id: id,
-) -> Result<bool, sqlx::Error> {
+pub async fn friend_accept(pool: &Pool<Postgres>, from: id, to: id) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
     let request_exists = sqlx::query_scalar!(
         r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM friend_requests
-            WHERE "from" = $1 AND "to" = $2
-        )
+            SELECT EXISTS(
+                SELECT 1
+                FROM friend_requests
+                WHERE "from" = $1 AND "to" = $2
+            )
         "#,
-        *friend_id as i64,
-        *user_id as i64
+        *to as i64,
+        *from as i64
     )
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?
     .unwrap_or(false);
 
@@ -189,9 +183,7 @@ pub async fn friend_accept(
         return Ok(false);
     }
 
-    let (user_1, user_2) = user_id.sort_pair(friend_id);
-
-    let mut tx = pool.begin().await?;
+    let (user_1, user_2) = from.sort_pair(to);
 
     sqlx::query!(
         r#"
@@ -210,8 +202,8 @@ pub async fn friend_accept(
         DELETE FROM friend_requests
         WHERE "from" = $1 AND "to" = $2
         "#,
-        *friend_id as i64,
-        *user_id as i64
+        *to as i64,
+        *from as i64
     )
     .execute(&mut *tx)
     .await?;
@@ -279,6 +271,21 @@ pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Result<Option<User>
         *user_id as i64
     )
     .fetch_optional(pool)
+    .await
+}
+
+pub async fn get_groups(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT 
+            gu.group_id as "id: id"
+        FROM group_users gu
+        WHERE gu.user_id = $1
+        ORDER BY gu.position ASC
+        "#,
+        *user_id as i64
+    )
+    .fetch_all(pool)
     .await
 }
 

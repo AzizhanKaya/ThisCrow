@@ -109,20 +109,28 @@ impl MessageStore {
         let cf_user_dms = self.db.cf_handle(CF_USER_DMS).unwrap();
 
         let (user1, user2) = msg.from.sort_pair(msg.to);
-
         let reverse_ts = i64::MAX - msg.time.timestamp_millis();
 
-        let index_key = format!("{}:{}:{:020}:{}", user1, user2, reverse_ts, msg.id);
-        self.db
-            .put_cf(&cf_dm, index_key.as_bytes(), msg.id.to_be_bytes())?;
+        let mut index_key = [0u8; 32];
+        index_key[0..8].copy_from_slice(&user1.to_be_bytes());
+        index_key[8..16].copy_from_slice(&user2.to_be_bytes());
+        index_key[16..24].copy_from_slice(&reverse_ts.to_be_bytes());
+        index_key[24..32].copy_from_slice(&msg.id.to_be_bytes());
+
+        self.db.put_cf(&cf_dm, &index_key, &[])?;
 
         let ts_bytes = msg.time.timestamp_millis().to_be_bytes();
 
-        let key1 = format!("{}:{}", msg.from, msg.to);
-        let key2 = format!("{}:{}", msg.to, msg.from);
+        let mut key1 = [0u8; 16];
+        key1[0..8].copy_from_slice(&msg.from.to_be_bytes());
+        key1[8..16].copy_from_slice(&msg.to.to_be_bytes());
 
-        self.db.put_cf(&cf_user_dms, key1.as_bytes(), &ts_bytes)?;
-        self.db.put_cf(&cf_user_dms, key2.as_bytes(), &ts_bytes)?;
+        let mut key2 = [0u8; 16];
+        key2[0..8].copy_from_slice(&msg.to.to_be_bytes());
+        key2[8..16].copy_from_slice(&msg.from.to_be_bytes());
+
+        self.db.put_cf(&cf_user_dms, &key1, &ts_bytes)?;
+        self.db.put_cf(&cf_user_dms, &key2, &ts_bytes)?;
 
         Ok(())
     }
@@ -135,20 +143,15 @@ impl MessageStore {
 
         let reverse_ts = i64::MAX - msg.time.timestamp_millis();
 
-        let index_key = format!("{}:{}:{:020}:{}", group_id, channel_id, reverse_ts, msg.id);
-        self.db
-            .put_cf(&cf_channel, index_key.as_bytes(), msg.id.to_be_bytes())?;
+        let mut index_key = [0u8; 32];
+        index_key[0..8].copy_from_slice(&group_id.to_be_bytes());
+        index_key[8..16].copy_from_slice(&channel_id.to_be_bytes());
+        index_key[16..24].copy_from_slice(&reverse_ts.to_be_bytes());
+        index_key[24..32].copy_from_slice(&msg.id.to_be_bytes());
+
+        self.db.put_cf(&cf_channel, &index_key, &[])?;
 
         Ok(())
-    }
-
-    fn box_to_u64(value: &[u8]) -> Option<u64> {
-        if value.len() == 8 {
-            let arr: [u8; 8] = value.try_into().ok()?;
-            Some(u64::from_be_bytes(arr))
-        } else {
-            None
-        }
     }
 
     fn box_to_i64(value: &[u8]) -> Option<i64> {
@@ -178,36 +181,43 @@ impl MessageStore {
             (*to, *from)
         };
 
-        let prefix = format!("{}:{}:", user1, user2);
+        let mut prefix = [0u8; 16];
+        prefix[0..8].copy_from_slice(&user1.to_be_bytes());
+        prefix[8..16].copy_from_slice(&user2.to_be_bytes());
 
         let end_reverse_ts = i64::MAX - end.timestamp_millis();
         let start_reverse_ts = start
             .map(|s| i64::MAX - s.timestamp_millis())
             .unwrap_or(i64::MAX);
 
-        let range_start = format!("{}:{}:{:020}:", user1, user2, end_reverse_ts);
-        let range_end = format!("{}:{}:{:020}:", user1, user2, start_reverse_ts);
+        let mut range_start = [0u8; 24];
+        range_start[0..16].copy_from_slice(&prefix);
+        range_start[16..24].copy_from_slice(&end_reverse_ts.to_be_bytes());
+
+        let mut range_end = [0u8; 24];
+        range_end[0..16].copy_from_slice(&prefix);
+        range_end[16..24].copy_from_slice(&start_reverse_ts.to_be_bytes());
 
         let mut messages = Vec::with_capacity(limit);
         let iter = self.db.iterator_cf(
             &cf_dm,
-            rocksdb::IteratorMode::From(range_start.as_bytes(), rocksdb::Direction::Forward),
+            rocksdb::IteratorMode::From(&range_start, rocksdb::Direction::Forward),
         );
 
         for item in iter {
-            let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
+            let (key, _value) = item?;
 
-            if !key_str.starts_with(&prefix) {
+            if !key.starts_with(&prefix) {
                 break;
             }
 
-            if key_str.as_bytes() >= range_end.as_bytes() {
+            if key.as_ref() >= range_end.as_slice() {
                 break;
             }
 
-            if let Some(msg_id) = Self::box_to_u64(&value) {
-                if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id.to_be_bytes())? {
+            if key.len() == 32 {
+                let msg_id_bytes: [u8; 8] = key[24..32].try_into().unwrap();
+                if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id_bytes)? {
                     let stored: StoredMessage = rmp_serde::from_slice(&msg_bytes)?;
                     messages.push(stored.into());
                 }
@@ -235,36 +245,43 @@ impl MessageStore {
         let cf_channel = self.db.cf_handle(CF_CHANNEL_INDEX).unwrap();
         let cf_messages = self.db.cf_handle(CF_MESSAGES).unwrap();
 
-        let prefix = format!("{}:{}:", group_id, channel_id);
+        let mut prefix = [0u8; 16];
+        prefix[0..8].copy_from_slice(&group_id.to_be_bytes());
+        prefix[8..16].copy_from_slice(&channel_id.to_be_bytes());
 
         let end_reverse_ts = i64::MAX - end.timestamp_millis();
         let start_reverse_ts = start
             .map(|s| i64::MAX - s.timestamp_millis())
             .unwrap_or(i64::MAX);
 
-        let range_start = format!("{}:{}:{:020}:", group_id, channel_id, end_reverse_ts);
-        let range_end = format!("{}:{}:{:020}:", group_id, channel_id, start_reverse_ts);
+        let mut range_start = [0u8; 24];
+        range_start[0..16].copy_from_slice(&prefix);
+        range_start[16..24].copy_from_slice(&end_reverse_ts.to_be_bytes());
+
+        let mut range_end = [0u8; 24];
+        range_end[0..16].copy_from_slice(&prefix);
+        range_end[16..24].copy_from_slice(&start_reverse_ts.to_be_bytes());
 
         let mut messages = Vec::with_capacity(limit);
         let iter = self.db.iterator_cf(
             &cf_channel,
-            rocksdb::IteratorMode::From(range_start.as_bytes(), rocksdb::Direction::Forward),
+            rocksdb::IteratorMode::From(&range_start, rocksdb::Direction::Forward),
         );
 
         for item in iter {
-            let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
+            let (key, _value) = item?;
 
-            if !key_str.starts_with(&prefix) {
+            if !key.starts_with(&prefix) {
                 break;
             }
 
-            if key_str.as_bytes() >= range_end.as_bytes() {
+            if key.as_ref() >= range_end.as_slice() {
                 break;
             }
 
-            if let Some(msg_id) = Self::box_to_u64(&value) {
-                if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id.to_be_bytes())? {
+            if key.len() == 32 {
+                let msg_id_bytes: [u8; 8] = key[24..32].try_into().unwrap();
+                if let Some(msg_bytes) = self.db.get_cf(&cf_messages, msg_id_bytes)? {
                     let stored: StoredMessage = rmp_serde::from_slice(&msg_bytes)?;
                     messages.push(stored.into());
                 }
@@ -283,21 +300,24 @@ impl MessageStore {
     pub fn get_dms(&self, user_id: id) -> Result<Vec<id>> {
         let cf_user_dms = self.db.cf_handle(CF_USER_DMS).unwrap();
 
-        let prefix = format!("{}:", *user_id);
-        let iter = self.db.prefix_iterator_cf(&cf_user_dms, prefix.as_bytes());
+        let prefix = user_id.to_be_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf_user_dms, &prefix);
 
         let mut temp_dm_users: Vec<(id, DateTime<Utc>)> = Vec::new();
 
         for item in iter {
             let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
 
-            if let Some(other_id_str) = key_str.strip_prefix(&prefix) {
-                if let Ok(other_id) = other_id_str.parse::<u64>() {
-                    if let Some(ts_millis) = Self::box_to_i64(&value) {
-                        if let Some(time) = DateTime::from_timestamp_millis(ts_millis) {
-                            temp_dm_users.push((id(other_id), time));
-                        }
+            if !key.starts_with(&prefix) {
+                break;
+            }
+
+            if key.len() == 16 {
+                let other_id_bytes: [u8; 8] = key[8..16].try_into().unwrap();
+                let other_id = u64::from_be_bytes(other_id_bytes);
+                if let Some(ts_millis) = Self::box_to_i64(&value) {
+                    if let Some(time) = DateTime::from_timestamp_millis(ts_millis) {
+                        temp_dm_users.push((id(other_id), time));
                     }
                 }
             }
