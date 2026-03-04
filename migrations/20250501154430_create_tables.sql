@@ -13,7 +13,6 @@ CREATE TABLE users (
 CREATE TABLE friends (
     user_1 BIGINT NOT NULL REFERENCES users(id),
     user_2 BIGINT NOT NULL REFERENCES users(id),
-    requested BOOLEAN DEFAULT true,
     PRIMARY KEY (user_1, user_2),
     CHECK (user_1 < user_2)
 );
@@ -38,6 +37,7 @@ CREATE TABLE group_users (
     group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     position SMALLINT NOT NULL,
+    name TEXT,
     PRIMARY KEY (group_id, user_id)
 );
 -- Create channels table
@@ -45,7 +45,8 @@ CREATE TABLE channels (
     id BIGSERIAL PRIMARY KEY,
     group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     channel_type BOOLEAN NOT NULL DEFAULT false,
-    position BIGINT NOT NULL,
+    position SMALLINT NOT NULL,
+    title TEXT,
     name TEXT NOT NULL
 );
 -- Create roles table
@@ -56,20 +57,25 @@ CREATE TABLE roles (
     color TEXT,
     permissions BIGINT NOT NULL DEFAULT 0,
     position SMALLINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    UNIQUE (group_id, id)
 );
 -- Create group_user_roles table
 CREATE TABLE group_user_roles (
     group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role_id BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    PRIMARY KEY (group_id, user_id, role_id)
+    PRIMARY KEY (group_id, user_id, role_id),
+
+    FOREIGN KEY (group_id, user_id) REFERENCES group_users(group_id, user_id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id, role_id) REFERENCES roles(group_id, id) ON DELETE CASCADE
 );
 -- Create permission_overrides table
 CREATE TABLE permission_overrides (
     id BIGSERIAL PRIMARY KEY,
     group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    channel_id BIGINT REFERENCES channels(id) ON DELETE CASCADE,
+    channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     role_id BIGINT REFERENCES roles(id) ON DELETE CASCADE,
     user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
     allow BIGINT NOT NULL DEFAULT 0,

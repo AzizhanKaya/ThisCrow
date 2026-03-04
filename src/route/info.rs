@@ -37,6 +37,7 @@ struct UserQuery {
 
 #[derive(Serialize)]
 struct UserInfo {
+    id: id,
     version: id,
     username: String,
     name: String,
@@ -49,6 +50,7 @@ struct UserInfo {
 impl From<state::user::State> for UserInfo {
     fn from(value: state::user::State) -> Self {
         Self {
+            id: value.id,
             version: value.version,
             username: value.username,
             name: value.name,
@@ -79,12 +81,13 @@ async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<MsgPack<
             error::ErrorInternalServerError("Error while getting user friends")
         })?;
 
-        let groups = db::group::get_groups(&state.pool, uid).await.map_err(|e| {
+        let groups = db::user::get_groups(&state.pool, uid).await.map_err(|e| {
             warn!("Error while getting user groups: {}", e);
             error::ErrorInternalServerError("Error while getting user groups")
         })?;
 
         return Ok(MsgPack(UserInfo {
+            id: user.id,
             version: id(0),
             username: user.username,
             name: user.name,
@@ -111,7 +114,7 @@ async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<MsgPack<
                 error::ErrorInternalServerError("Error while getting user friends")
             })?;
 
-        let groups = db::group::get_groups(&state.pool, user.id)
+        let groups = db::user::get_groups(&state.pool, user.id)
             .await
             .map_err(|e| {
                 warn!("Error while getting user groups: {}", e);
@@ -119,6 +122,7 @@ async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<MsgPack<
             })?;
 
         return Ok(MsgPack(UserInfo {
+            id: user.id,
             version: id(0),
             username: user.username,
             name: user.name,
@@ -129,7 +133,7 @@ async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<MsgPack<
         }));
     }
 
-    todo!()
+    Err(error::ErrorBadRequest("No query parameters provided"))
 }
 
 #[derive(Serialize)]

@@ -1,13 +1,14 @@
 use crate::State;
-use crate::db;
-use crate::id::id;
+use crate::id as Id;
 use crate::message::Ack;
 use crate::message::Message;
+use crate::msgpack;
 use bitflags::bitflags;
 use bytes::Bytes;
+use derive_more::Constructor;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
+use serde::Serializer;
 use std::collections::{HashMap, HashSet};
 
 bitflags! {
@@ -42,57 +43,50 @@ bitflags! {
     }
 }
 
+type id = Id::id;
 type UserId = id;
 type RoleId = id;
 type ChannelId = id;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Constructor)]
 pub struct Group {
     pub id: id,
     pub icon: Option<String>,
     pub name: String,
     pub version: id,
-    pub users: HashMap<UserId, User>,
-    roles: HashMap<RoleId, Role>,
-    channels: HashMap<ChannelId, Channel>,
+    #[serde(serialize_with = "serialize_as_vec")]
+    pub members: HashMap<UserId, Member>,
+    #[serde(serialize_with = "serialize_as_vec")]
+    pub roles: HashMap<RoleId, Role>,
+    #[serde(serialize_with = "serialize_as_vec")]
+    pub channels: HashMap<ChannelId, Channel>,
     #[serde(skip)]
     pub subscribers: HashSet<UserId>,
 }
 
-impl From<db::group::Group> for Group {
-    fn from(value: db::group::Group) -> Self {
-        Self {
-            id: value.id,
-            icon: value.icon,
-            name: value.name,
-            version: id(0),
-            users: HashMap::new(),
-            roles: HashMap::new(),
-            channels: HashMap::new(),
-            subscribers: HashSet::new(),
-        }
-    }
-}
-
-#[derive(Serialize, Clone)]
-pub struct User {
+#[derive(Serialize, Clone, Constructor)]
+pub struct Member {
+    id: UserId,
+    name: Option<String>,
     roles: Vec<RoleId>,
 }
 
-#[derive(Serialize, Clone)]
-struct Role {
+#[derive(Serialize, Clone, Constructor)]
+pub struct Role {
     id: RoleId,
     name: String,
+    position: usize,
     color: String,
     #[serde(skip)]
     permissions: Permissions,
 }
 
-#[derive(Serialize, Clone)]
-struct Channel {
+#[derive(Serialize, Clone, Constructor)]
+pub struct Channel {
     id: ChannelId,
     name: String,
-    order: usize,
+    title: Option<String>,
+    position: usize,
     r#type: ChannelType,
     #[serde(skip)]
     permission_overrides: Vec<PermissionOverride>,
@@ -102,18 +96,18 @@ struct Channel {
 #[serde(rename_all = "lowercase")]
 pub enum ChannelType {
     Voice,
-    Chat,
+    Text,
 }
 
-#[derive(Clone)]
-struct PermissionOverride {
+#[derive(Clone, Constructor)]
+pub struct PermissionOverride {
     target: OverrideTarget,
     allow: Permissions,
     deny: Permissions,
 }
 
 #[derive(Serialize, Clone)]
-enum OverrideTarget {
+pub enum OverrideTarget {
     Role(RoleId),
     User(UserId),
 }
@@ -124,7 +118,7 @@ impl Group {
         user_id: UserId,
         channel_id: Option<ChannelId>,
     ) -> Permissions {
-        let Some(user) = self.users.get(&user_id) else {
+        let Some(user) = self.members.get(&user_id) else {
             return Permissions::empty();
         };
 
@@ -193,7 +187,7 @@ impl Group {
     }
 
     pub fn notify(&self, message: Message<Ack>, state: &State) {
-        let message = Bytes::from(json!(message).to_string());
+        let message = Bytes::from(msgpack!(message));
         self.subscribers.iter().for_each(|user_id| {
             if let Some(user) = state.users.get(user_id) {
                 user.send_bytes(message.clone());
@@ -208,7 +202,7 @@ impl Group {
         channel_id: Option<ChannelId>,
         state: &State,
     ) {
-        let message = Bytes::from(json!(message).to_string());
+        let message = Bytes::from(msgpack!(message));
         self.subscribers.iter().for_each(|user_id| {
             if let Some(user) = state.users.get(user_id) {
                 if self
@@ -231,32 +225,57 @@ impl Group {
         self.next_version();
     }
 
-    // ===== Channel Management =====
-    pub fn create_channel(&mut self, channel_id: ChannelId, name: String, r#type: ChannelType) {
-        let order = self.channels.len();
+    // ===== CHANNEL =====
+
+    pub fn create_channel(
+        &mut self,
+        channel_id: ChannelId,
+        name: String,
+        r#type: ChannelType,
+    ) -> usize {
+        let position = self.channels.len() + 1;
+
         let channel = Channel {
             id: channel_id,
             name,
-            order,
+            title: None,
+            position,
             r#type,
             permission_overrides: Vec::new(),
         };
+
         self.channels.insert(channel_id, channel);
         self.next_version();
+
+        position
     }
 
     pub fn update_channel(
         &mut self,
         channel_id: ChannelId,
         name: Option<String>,
-        order: Option<u64>,
+        title: Option<String>,
+        position: Option<usize>,
     ) {
-        if let Some(ch) = self.channels.get_mut(&channel_id) {
-            if let Some(n) = name {
-                ch.name = n;
+        let old_pos = self.channels.get(&channel_id).map(|c| c.position);
+
+        if let (Some(new), Some(old)) = (position, old_pos) {
+            for c in self.channels.values_mut().filter(|c| c.id != channel_id) {
+                if c.position > old && c.position <= new {
+                    c.position -= 1;
+                } else if c.position >= new && c.position < old {
+                    c.position += 1;
+                }
             }
-            if let Some(o) = order {
-                ch.order = o as usize;
+        }
+
+        if let Some(channel) = self.channels.get_mut(&channel_id) {
+            if let Some(n) = name {
+                channel.name = n;
+            }
+            channel.title = title;
+            if let Some(p) = position {
+                channel.position = p;
             }
             self.next_version();
         }
@@ -268,7 +287,7 @@ impl Group {
         }
     }
 
-    // ===== Role Management =====
+    // ===== ROLE =====
     pub fn create_role(
         &mut self,
         role_id: id,
@@ -276,11 +295,13 @@ impl Group {
         color: String,
         permissions: Permissions,
     ) {
+        let position = self.roles.values().map(|r| r.position).max().unwrap_or(0) + 1;
         let role = Role {
             id: role_id,
             name,
             color,
             permissions,
+            position,
         };
         self.roles.insert(role_id, role);
         self.next_version();
@@ -290,12 +311,28 @@ impl Group {
         &mut self,
         role_id: id,
         name: Option<String>,
+        position: Option<usize>,
         color: Option<String>,
         permissions: Option<Permissions>,
     ) {
+        let old_pos = self.roles.get(&role_id).map(|r| r.position);
+
+        if let (Some(new), Some(old)) = (position, old_pos) {
+            for r in self.roles.values_mut().filter(|r| r.id != role_id) {
+                if r.position > old && r.position <= new {
+                    r.position -= 1;
+                } else if r.position >= new && r.position < old {
+                    r.position += 1;
+                }
+            }
+        }
+
         if let Some(role) = self.roles.get_mut(&role_id) {
             if let Some(n) = name {
                 role.name = n;
+            }
+            if let Some(p) = position {
+                role.position = p;
             }
             if let Some(c) = color {
                 role.color = c;
@@ -309,7 +346,7 @@ impl Group {
 
     pub fn delete_role(&mut self, role_id: RoleId) {
         if self.roles.remove(&role_id).is_some() {
-            self.users.iter_mut().for_each(|(_, u)| {
+            self.members.iter_mut().for_each(|(_, u)| {
                 u.roles.retain(|&r| r != role_id);
             });
             self.next_version();
@@ -318,7 +355,7 @@ impl Group {
 
     pub fn assign_role(&mut self, user_id_param: UserId, role_id: RoleId) {
         if self.roles.contains_key(&role_id) {
-            if let Some(u) = self.users.get_mut(&user_id_param) {
+            if let Some(u) = self.members.get_mut(&user_id_param) {
                 u.roles.push(role_id);
                 self.next_version();
             }
@@ -326,9 +363,17 @@ impl Group {
     }
 
     pub fn remove_role(&mut self, user_id_param: UserId, role_id: RoleId) {
-        if let Some(u) = self.users.get_mut(&user_id_param) {
+        if let Some(u) = self.members.get_mut(&user_id_param) {
             u.roles.retain(|&r| r != role_id);
             self.next_version();
         }
     }
+}
+
+fn serialize_as_vec<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    V: Serialize,
+{
+    serializer.collect_seq(map.values())
 }

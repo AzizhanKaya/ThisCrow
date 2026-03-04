@@ -36,23 +36,24 @@ pub async fn handle_bytes(
         message.time = now;
         message.id = id::from(state.snowflake.generate().await);
 
-        let ack = Bytes::from(msgpack!(Message {
+        let ack = Message {
             id: message.id,
             data: Ack::Received(message_id),
             time: now,
             from: user_id,
             to: message.to,
             ..Default::default()
-        }));
+        };
 
         if let Some(user) = state.users.get(&user_id) {
             let message = Bytes::from(msgpack!(message));
+
             for connection in user.connections.iter() {
-                if connection.connection_id == connection_id {
-                    connection.reciver.send(ack.clone());
+                if connection.id == connection_id {
+                    connection.writer.send(Bytes::from(msgpack!(ack)));
                     continue;
                 }
-                connection.reciver.send(message.clone());
+                connection.writer.send(message.clone());
             }
         }
 
@@ -70,7 +71,7 @@ pub async fn handle_bytes(
 
         tokio::spawn(async move {
             if let Err(e) = event::handle_event(state, event).await {
-                eprintln!("Error while handling event: {}", e);
+                log::warn!("Error while handling event: {:?}", e);
             }
         });
 
@@ -126,7 +127,7 @@ pub fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     if let Some(to) = state.users.get(&message.to) {
         let message = Bytes::from(msgpack!(message));
         for connection in to.connections.iter() {
-            connection.reciver.send(message.clone());
+            connection.writer.send(message.clone());
         }
     }
 }
@@ -139,7 +140,7 @@ pub fn send_message_all<T: Serialize>(state: &State, message: Message<T>, user_i
         .filter_map(|user_id| state.users.get(&user_id))
         .for_each(|user| {
             for connection in user.connections.iter() {
-                connection.reciver.send(message.clone());
+                connection.writer.send(message.clone());
             }
         });
 }

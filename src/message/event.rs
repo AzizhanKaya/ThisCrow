@@ -1,15 +1,14 @@
 use crate::db::{self};
 use crate::id::id;
-use crate::message::dispatch::send_message_all;
+use crate::message::dispatch::{send_message, send_message_all};
 use crate::message::{Ack, MessageType};
 use crate::state::group::Permissions;
 use crate::state::group::{ChannelType, Group};
 use crate::state::user;
 use crate::{State, message::Message};
-use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -28,22 +27,30 @@ pub enum Event {
     FriendRemove,
 
     /* ===== Group ===== */
+    CreateGroup {
+        name: String,
+        icon: Option<String>,
+        description: Option<String>,
+    },
     UpdateGroup {
         name: Option<String>,
+        description: Option<String>,
         icon: Option<String>,
     },
+    DeleteGroup,
     Subscribe,
     Unsubscribe,
 
     /* ===== ROLE ===== */
     CreateRole {
         name: String,
-        permissions: u64,
         color: String,
+        permissions: u64,
     },
     UpdateRole {
         role: id,
         name: Option<String>,
+        position: Option<usize>,
         color: Option<String>,
         permissions: Option<u64>,
     },
@@ -66,7 +73,8 @@ pub enum Event {
     },
     UpdateChannel {
         name: Option<String>,
-        r#type: Option<ChannelType>,
+        title: Option<String>,
+        position: Option<usize>,
     },
     DeleteChannel,
 
@@ -103,57 +111,20 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                         }
                         user.state.avatar = avatar.clone();
 
-                        let all_users: HashSet<id> = user
-                            .state
-                            .friends
-                            .iter()
-                            .cloned()
-                            .chain(
-                                user.state
-                                    .groups
-                                    .iter()
-                                    .filter_map(|group_id| state.groups.get(group_id))
-                                    .flat_map(|group| {
-                                        group.subscribers.iter().cloned().collect::<Vec<_>>()
-                                    }),
-                            )
-                            .collect();
-
                         let ack = Message {
                             id: user.next_version(),
                             to: message.from,
-                            data: Ack::UpdatedUser {
-                                name: name,
-                                avatar: avatar,
-                            },
+                            data: Ack::UpdatedUser { name, avatar },
                             ..Message::default()
                         };
 
-                        user.send_message(&ack);
-
-                        send_message_all(&state, ack, all_users.into_iter().collect());
+                        user.send_message_all(ack, &state);
                     }
                 }
 
                 Event::ChangeStatus(change_status) => {
                     if let Some(mut user) = state.users.get_mut(&message.from) {
                         user.state.status = change_status.clone();
-
-                        let all_users: HashSet<id> = user
-                            .state
-                            .friends
-                            .iter()
-                            .cloned()
-                            .chain(
-                                user.state
-                                    .groups
-                                    .iter()
-                                    .filter_map(|group_id| state.groups.get(group_id))
-                                    .flat_map(|group| {
-                                        group.subscribers.iter().cloned().collect::<Vec<_>>()
-                                    }),
-                            )
-                            .collect();
 
                         let ack = Message {
                             id: user.next_version(),
@@ -162,9 +133,7 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                             ..Message::default()
                         };
 
-                        user.send_message(&ack);
-
-                        send_message_all(&state, ack, all_users.into_iter().collect());
+                        user.send_message_all(ack, &state);
                     }
                 }
                 /* ===== FRIEND ===== */
@@ -180,25 +149,27 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(mut to_user) = state.users.get_mut(&to) {
                         let ack = Message {
                             id: to_user.next_version(),
+                            from,
                             to,
-                            data: Ack::ReceivedFriendRequest(from),
+                            data: Ack::ReceivedFriendRequest,
                             ..Message::default()
                         };
 
                         to_user.state.friend_requests.push(from);
-                        to_user.send_message(&ack);
+                        to_user.send_message(ack);
                     }
 
                     if let Some(mut from_user) = state.users.get_mut(&from) {
                         let ack = Message {
                             id: from_user.next_version(),
+                            from: to,
                             to: from,
-                            data: Ack::SentFriendRequest(to),
+                            data: Ack::SentFriendRequest,
                             ..Message::default()
                         };
 
                         from_user.state.friend_requests_sent.push(to);
-                        from_user.send_message(&ack);
+                        from_user.send_message(ack);
                     }
                 }
                 Event::FriendAccept => {
@@ -212,25 +183,29 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                         if let Some(mut from_user) = state.users.get_mut(&from) {
                             let ack = Message {
                                 id: from_user.next_version(),
+                                from: to,
                                 to: from,
-                                data: Ack::AddedFriend(to),
+                                data: Ack::AddedFriend,
                                 ..Message::default()
                             };
 
                             from_user.state.friends.insert(to);
-                            from_user.send_message(&ack);
+                            from_user.state.friend_requests.retain(|&i| i != to);
+                            from_user.send_message(ack);
                         }
 
                         if let Some(mut to_user) = state.users.get_mut(&to) {
                             let ack = Message {
                                 id: to_user.next_version(),
+                                from,
                                 to,
-                                data: Ack::AddedFriend(from),
+                                data: Ack::AddedFriend,
                                 ..Message::default()
                             };
 
                             to_user.state.friends.insert(from);
-                            to_user.send_message(&ack);
+                            to_user.state.friend_requests_sent.retain(|&i| i != from);
+                            to_user.send_message(ack);
                         }
                     }
                 }
@@ -246,30 +221,64 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(mut from_user) = state.users.get_mut(&from) {
                         let ack = Message {
                             id: from_user.next_version(),
+                            from: to,
                             to: from,
-                            data: Ack::DeletedFriend(to),
+                            data: Ack::DeletedFriend,
                             ..Message::default()
                         };
 
                         from_user.state.friends.remove(&to);
                         from_user.state.friend_requests_sent.retain(|&i| i != to);
-                        from_user.send_message(&ack);
+                        from_user.send_message(ack);
                     }
 
                     if let Some(mut to_user) = state.users.get_mut(&to) {
                         let ack = Message {
                             id: to_user.next_version(),
+                            from,
                             to,
-                            data: Ack::DeletedFriend(from),
+                            data: Ack::DeletedFriend,
                             ..Message::default()
                         };
 
                         to_user.state.friends.remove(&from);
                         to_user.state.friend_requests.retain(|&i| i != from);
-                        to_user.send_message(&ack);
+                        to_user.send_message(ack);
                     }
                 }
-                _ => return Err(anyhow!("Invalid event")),
+
+                Event::CreateGroup {
+                    name,
+                    icon,
+                    description,
+                } => {
+                    let group_id = db::group::create_group(
+                        &state.pool,
+                        &name,
+                        icon.as_deref(),
+                        description.as_deref(),
+                        message.from,
+                    )
+                    .await?;
+
+                    db::group::add_member(&state.pool, message.from, group_id).await?;
+
+                    let ack = Message {
+                        id: group_id,
+                        to: message.from,
+                        data: Ack::CreatedGroup {
+                            name,
+                            icon,
+                            description,
+                        },
+                        ..Message::default()
+                    };
+
+                    send_message(&state, ack);
+
+                    return Ok(());
+                }
+                _ => anyhow::bail!("Invalid event"),
             }
         }
 
@@ -297,11 +306,11 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                             let ack = Message {
                                 id: group.get_version(),
                                 from: message.from,
-                                data: Ack::Subscribed(group.clone()),
+                                data: Ack::Subscribed(Box::new(group.clone())),
                                 ..Message::default()
                             };
 
-                            user.send_message(&ack);
+                            user.send_message(ack);
                         }
                     }
                     return Ok(());
@@ -311,49 +320,99 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         group.unsubscribe(message.from);
 
-                        if let Some(mut user) = state.users.get_mut(&message.from) {
-                            user.state.groups.retain(|&gid| gid != group_id);
-
+                        if let Some(user) = state.users.get_mut(&message.from) {
                             let ack = Message {
                                 id: group.get_version(),
-                                from: message.from,
-                                data: Ack::Unsubscribed(group_id),
+                                from: group_id,
+                                to: message.from,
+                                data: Ack::Unsubscribed,
                                 ..Message::default()
                             };
 
-                            user.send_message(&ack);
+                            user.send_message(ack);
                         }
                         return Ok(());
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
                 }
 
-                Event::UpdateGroup { name, icon } => {
+                Event::UpdateGroup {
+                    name,
+                    description,
+                    icon,
+                } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_GROUP | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to update group"));
+                            anyhow::bail!("Unauthorized to update group");
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
 
                     let _lock = state.group_locks.write(group_id).await;
 
-                    db::group::update_group(&state.pool, group_id, name.clone(), icon.clone())
-                        .await?;
+                    db::group::update_group(
+                        &state.pool,
+                        group_id,
+                        name.clone(),
+                        description.clone(),
+                        icon.clone(),
+                    )
+                    .await?;
 
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         group.update_group(name.clone(), icon.clone());
 
+                        let ack = Message {
+                            id: group.get_version(),
+                            from: group_id,
+                            data: Ack::UpdatedGroup {
+                                name,
+                                description,
+                                icon,
+                            },
+                            ..Message::default()
+                        };
+
+                        let users = group.members.keys().copied().collect();
+
+                        send_message_all(&state, ack, users);
+                    }
+
+                    return Ok(());
+                }
+
+                /* ===== CHANNEL ===== */
+                Event::CreateChannel { name, r#type } => {
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, None);
+                        if !perms
+                            .contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to create channel");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let channel_id = message.to;
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let position =
+                            group.create_channel(channel_id, name.clone(), r#type.clone());
+
                         Message {
                             id: group.get_version(),
-                            from: message.from,
-                            data: Ack::UpdatedGroup {
-                                id: group_id,
+                            from: group_id,
+                            to: channel_id,
+                            data: Ack::CreatedChannel {
                                 name,
-                                icon,
+                                position,
+                                r#type,
                             },
                             ..Message::default()
                         }
@@ -361,6 +420,57 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                         return Ok(());
                     }
                 }
+
+                Event::UpdateChannel {
+                    name,
+                    title,
+                    position,
+                } => {
+                    let channel_id = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, Some(channel_id));
+                        if !perms
+                            .contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to create channel");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::update_channel(
+                        &state.pool,
+                        group_id,
+                        channel_id,
+                        name.clone(),
+                        title.clone(),
+                        position,
+                    )
+                    .await?;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.update_channel(channel_id, name.clone(), title.clone(), position);
+
+                        Message {
+                            id: group.get_version(),
+                            from: group_id,
+                            to: channel_id,
+                            data: Ack::UpdatedChannel {
+                                name,
+                                title,
+                                position,
+                            },
+                            ..Message::default()
+                        }
+                    } else {
+                        return Ok(());
+                    }
+                }
+
+                /* ===== MEMBER ===== */
 
                 /* ===== ROLE ===== */
                 Event::CreateRole {
@@ -371,10 +481,10 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to create role"));
+                            anyhow::bail!("Unauthorized to create role");
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
 
                     let _lock = state.group_locks.write(group_id).await;
@@ -398,9 +508,9 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
 
                         Message {
                             id: group.get_version(),
-                            to: message.from,
+                            from: group_id,
+                            to: role_id,
                             data: Ack::CreatedRole {
-                                id: role_id,
                                 name,
                                 color,
                                 permissions,
@@ -414,16 +524,17 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                 Event::UpdateRole {
                     role,
                     name,
+                    position,
                     color,
                     permissions,
                 } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to update role"));
+                            anyhow::bail!("Unauthorized to update role");
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
 
                     let _lock = state.group_locks.write(group_id).await;
@@ -441,15 +552,16 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                         group.update_role(
                             role,
                             name.clone(),
+                            position,
                             color.clone(),
                             permissions.map(|p| Permissions::from_bits_truncate(p)),
                         );
 
                         Message {
                             id: group.get_version(),
+                            from: group_id,
                             to: message.from,
                             data: Ack::UpdatedRole {
-                                id: role,
                                 name,
                                 color,
                                 permissions,
@@ -457,7 +569,7 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                             ..Message::default()
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -465,10 +577,10 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to delete role"));
+                            anyhow::bail!("Unauthorized to delete role");
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
 
                     let _lock = state.group_locks.write(group_id).await;
@@ -480,12 +592,13 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
 
                         Message {
                             id: group.get_version(),
+                            from: role,
                             to: message.from,
-                            data: Ack::DeletedRole(role),
+                            data: Ack::DeletedRole,
                             ..Message::default()
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -493,10 +606,10 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to assign role"));
+                            anyhow::bail!("Unauthorized to assign role");
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
 
                     let _lock = state.group_locks.write(group_id).await;
@@ -508,260 +621,26 @@ pub async fn handle_event(state: State, message: Message<Event>) -> Result<()> {
 
                         Message {
                             id: group.get_version(),
+                            from: role,
                             to: message.from,
-                            data: Ack::AssignedRole(role),
+                            data: Ack::AssignedRole,
                             ..Message::default()
                         }
                     } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                } /*
-
-                Event::RemoveRole { user, role } => {
-                if let Some(group) = state.groups.get(&group_id) {
-                let perms = group.compute_permissions(message.from, None);
-                if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
-                return Err(anyhow!("Unauthorized to remove role"));
-                }
-                } else {
-                return Err(anyhow!("Group not found"));
-                }
-
-                let _lock = state.group_locks.write(group_id).await;
-
-                db::group::remove_role(&state.pool, user, role).await?;
-
-                if let Some(mut group) = state.groups.get_mut(&group_id) {
-                group.remove_role(user, role);
-
-                Message {
-                id: group.get_version(),
-                to: message.from,
-                data: Ack::RemovedRole { user, role },
-                ..Message::default()
-                }
-                } else {
-                return Err(anyhow!("Group not found"));
-                }
-                }
-
-                /* ===== CHANNEL ===== */
-                Event::CreateChannel { name, kind } => {
-                    if let Some(group) = state.groups.get(&group_id) {
-                        let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to create channel"));
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    let channel_id = db::group::create_channel(&state.pool, group_id, name.clone(), kind).await?;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.create_channel(channel_id, name.clone(), kind);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::CreatedChannel { id: channel_id, name, kind },
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
+                        anyhow::bail!("Group not found");
                     }
                 }
-
-                Event::UpdateChannel { name, order } => {
-                     // Kanal ID'si message.to üzerinden geliyor varsayımıyla:
-                    let channel_id = message.to;
-
-                    if let Some(group) = state.groups.get(&group_id) {
-                        let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to update channel"));
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    db::group::update_channel(&state.pool, channel_id, name.clone(), order).await?;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.update_channel(channel_id, name.clone(), order);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::UpdatedChannel { id: channel_id, name, order },
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-                Event::DeleteChannel => {
-                    let channel_id = message.to;
-
-                    if let Some(group) = state.groups.get(&group_id) {
-                        let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to delete channel"));
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    db::group::delete_channel(&state.pool, channel_id).await?;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.delete_channel(channel_id);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::DeletedChannel(channel_id),
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-                /* ===== VOICE ===== */
-                Event::JoinChannel => {
-                    let channel_id = message.to;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.join_voice_channel(message.from, channel_id);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::JoinedChannel(channel_id),
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-                Event::ExitChannel => {
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.exit_voice_channel(message.from);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::ExitedChannel,
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-                Event::MoveVoice { to } => {
-                    let channel_id = to;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.move_voice_channel(message.from, channel_id);
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::MovedVoice(channel_id),
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-
-                /* ===== MODERATION ===== */
-                Event::KickUser => {
-                    let target_user = message.to;
-
-                    if let Some(group) = state.groups.get(&group_id) {
-                        let perms = group.compute_permissions(message.from, None);
-
-                        if !perms.contains(Permissions::KICK_MEMBERS | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to kick user"));
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    // Gruptan çıkarma işlemi (Kick genellikle soft-delete değil, ilişkiyi silmektir)
-                    db::group::remove_user(&state.pool, group_id, target_user).await?;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.users.remove(&target_user);
-
-                        // Kicklenen kullanıcıya da ayrıca bildirim gitmesi gerekebilir,
-                        // ancak burada işlem yapan kişiye Ack dönüyoruz.
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::KickedUser(target_user),
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }
-
-                Event::BanUser => {
-                    let target_user = message.to;
-
-                    if let Some(group) = state.groups.get(&group_id) {
-                        let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::BAN_MEMBERS | Permissions::ADMINISTRATOR) {
-                            return Err(anyhow!("Unauthorized to ban user"));
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    db::group::ban_user(&state.pool, group_id, target_user).await?;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.users.remove(&target_user);
-                        // Ban listesine ekleme logic'i group struct'ında varsa buraya eklenmeli
-
-                        Message {
-                            id: group.get_version(),
-                            to: message.from,
-                            data: Ack::BannedUser(target_user),
-                            ..Message::default()
-                        }
-                    } else {
-                        return Err(anyhow!("Group not found"));
-                    }
-                }*/
-                _ => return Err(anyhow!("Invalid event")),
+                _ => anyhow::bail!("Invalid event"),
             };
 
             if let Some(group) = state.groups.get(&group_id) {
                 group.notify(ack, &state);
             } else {
-                return Err(anyhow!("Group not found"));
+                anyhow::bail!("Group not found");
             }
         }
         _ => {
-            return Err(anyhow!("Invalid message type"));
+            anyhow::bail!("Invalid message type");
         }
     }
     Ok(())

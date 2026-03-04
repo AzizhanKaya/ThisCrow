@@ -30,7 +30,7 @@ pub struct State {
     pub friends: HashSet<id>,
     pub friend_requests: Vec<id>,
     pub friend_requests_sent: Vec<id>,
-    pub dms: HashSet<id>,
+    pub dms: Vec<id>,
     pub groups: Vec<id>,
     #[serde(skip)]
     pub activities: Vec<Activity>,
@@ -56,7 +56,7 @@ pub enum Activity {
 #[derive(Clone, Debug)]
 pub enum Voice {
     Direct(id),
-    Group(id),
+    Channel(id),
 }
 
 impl Session {

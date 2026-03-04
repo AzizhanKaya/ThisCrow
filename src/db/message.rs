@@ -138,16 +138,14 @@ impl MessageStore {
     fn index_channel_message(&self, msg: &StoredMessage) -> Result<()> {
         let cf_channel = self.db.cf_handle(CF_CHANNEL_INDEX).unwrap();
 
-        let group_id = msg.group_id.unwrap();
         let channel_id = msg.to;
 
         let reverse_ts = i64::MAX - msg.time.timestamp_millis();
 
-        let mut index_key = [0u8; 32];
-        index_key[0..8].copy_from_slice(&group_id.to_be_bytes());
-        index_key[8..16].copy_from_slice(&channel_id.to_be_bytes());
-        index_key[16..24].copy_from_slice(&reverse_ts.to_be_bytes());
-        index_key[24..32].copy_from_slice(&msg.id.to_be_bytes());
+        let mut index_key = [0u8; 24];
+        index_key[0..8].copy_from_slice(&channel_id.to_be_bytes());
+        index_key[8..16].copy_from_slice(&reverse_ts.to_be_bytes());
+        index_key[16..24].copy_from_slice(&msg.id.to_be_bytes());
 
         self.db.put_cf(&cf_channel, &index_key, &[])?;
 

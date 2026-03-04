@@ -79,12 +79,10 @@ pub async fn ws(
         .collect();
     let incoming = incoming_res.map_err(error::ErrorInternalServerError)?;
     let outgoing = outgoing_res.map_err(error::ErrorInternalServerError)?;
-    let dms: HashSet<id> = state
+    let dms: Vec<id> = state
         .messages
         .get_dms(user_id)
-        .map_err(error::ErrorInternalServerError)?
-        .into_iter()
-        .collect();
+        .map_err(|e| error::ErrorInternalServerError(e))?;
 
     let user = user::State {
         id: user_id,

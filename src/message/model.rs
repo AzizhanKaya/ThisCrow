@@ -17,7 +17,7 @@ pub struct Message<T> {
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug, Copy)]
-#[serde(rename_all = "lowercase", tag = "type", content = "group_id")]
+#[serde(rename_all = "snake_case", tag = "type", content = "group_id")]
 pub enum MessageType {
     Direct,
     Group(id),

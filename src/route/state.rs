@@ -60,7 +60,7 @@ pub async fn get_channel_messages(
                 .compute_permissions(user.id, Some(query.channel_id))
                 .contains(Permissions::VIEW_MESSAGES)
         })
-        .ok_or_else(|| error::ErrorUnauthorized(""))?;
+        .ok_or_else(|| error::ErrorUnauthorized("Don't have permissions to view this channel"))?;
 
     let messages = state
         .messages
@@ -136,13 +136,10 @@ pub async fn get_groups(
 }
 
 pub async fn get_dms(state: State, user: web::ReqData<JwtUser>) -> Result<MsgPack<Vec<id>>, Error> {
-    let dms = state
-        .users
-        .get(&user.id)
-        .ok_or_else(|| error::ErrorBadRequest("Session has not initialized"))?
-        .state
-        .dms
-        .clone();
+    let dms = state.messages.get_dms(user.id).map_err(|e| {
+        warn!("Error while getting dms: {}", e);
+        error::ErrorInternalServerError("Error while getting dms")
+    })?;
 
     Ok(MsgPack(dms))
 }
