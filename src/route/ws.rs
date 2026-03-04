@@ -39,6 +39,8 @@ pub async fn ws(
         return Ok(response);
     }
 
+    let connection_id = 1;
+
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
 
     actix_web::rt::spawn({
@@ -51,7 +53,7 @@ pub async fn ws(
                     .is_err()
                     || rx.len() > 100
                 {
-                    close_session(user_id, state, 0).await;
+                    close_session(state, user_id, 1).await;
                     break;
                 }
             }
@@ -60,7 +62,7 @@ pub async fn ws(
 
     let (user_res, groups_res, friends_res, incoming_res, outgoing_res) = tokio::join!(
         db::user::get_user(&state.pool, user_id),
-        db::group::get_groups(&state.pool, user_id),
+        db::user::get_groups(&state.pool, user_id),
         db::user::get_friends(&state.pool, user_id),
         db::user::friend_requests(&state.pool, user_id),
         db::user::outgoing_friend_requests(&state.pool, user_id)
@@ -77,11 +79,12 @@ pub async fn ws(
         .collect();
     let incoming = incoming_res.map_err(error::ErrorInternalServerError)?;
     let outgoing = outgoing_res.map_err(error::ErrorInternalServerError)?;
-
-    let dms: Vec<id> = state
+    let dms: HashSet<id> = state
         .messages
         .get_dms(user_id)
-        .map_err(|e| error::ErrorInternalServerError(e))?;
+        .map_err(error::ErrorInternalServerError)?
+        .into_iter()
+        .collect();
 
     let user = user::State {
         id: user_id,
@@ -89,19 +92,20 @@ pub async fn ws(
         username: user.username,
         name: user.name,
         avatar: user.avatar,
+        groups,
         friends,
         friend_requests: incoming,
         friend_requests_sent: outgoing,
-        groups,
         dms,
         status: user::Status::Online,
+        activities: vec![],
+        voice: None,
     };
 
     let user_session = user::Session {
-        id: user_id,
         connections: vec![user::Connection {
-            reciver: tx,
-            connection_id: 0,
+            id: connection_id,
+            writer: tx,
         }],
         state: user.clone(),
     };
@@ -110,7 +114,7 @@ pub async fn ws(
 
     let session_initialized = Message {
         to: user_id,
-        data: Ack::Initialized(user),
+        data: Ack::Initialized(Box::new(user)),
         ..Default::default()
     };
 
@@ -121,7 +125,7 @@ pub async fn ws(
         user_id,
         msg_stream,
         state.clone(),
-        0,
+        connection_id,
     ));
 
     Ok(response)
@@ -133,14 +137,8 @@ fn add_connection(
     msg_stream: MessageStream,
     state: &State,
 ) {
-    let user_id = user.id;
-    let connection_id = user
-        .connections
-        .iter()
-        .map(|c| c.connection_id)
-        .max()
-        .unwrap_or(0)
-        + 1;
+    let user_id = user.state.id;
+    let connection_id = user.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
 
@@ -154,7 +152,7 @@ fn add_connection(
                     .is_err()
                     || rx.len() > 100
                 {
-                    close_session(user_id, state, connection_id).await;
+                    close_session(state, user_id, connection_id).await;
                     break;
                 }
             }
@@ -163,15 +161,15 @@ fn add_connection(
 
     let session_initialized = Message {
         to: user_id,
-        data: Ack::Initialized(user.state.clone()),
+        data: Ack::Initialized(Box::new(user.state.clone())),
         ..Default::default()
     };
 
     tx.send(Bytes::from(msgpack!(session_initialized)));
 
     user.connections.push(user::Connection {
-        reciver: tx,
-        connection_id,
+        id: connection_id,
+        writer: tx,
     });
 
     actix_web::rt::spawn(handle_connection(
@@ -214,31 +212,35 @@ async fn handle_connection(
                 }
             },
             Some(Err(e)) => {
-                println!("Stream hatası: {:?}", e);
+                warn!("Stream hatası: {:?}", e);
                 break;
             }
             None => {
-                println!("Stream kapandı");
                 break;
             }
         }
     }
-    close_session(user_id, state, connection_id).await;
+    close_session(state, user_id, connection_id).await;
 }
 
-async fn close_session(user_id: id, state: State, connection_id: usize) {
+async fn close_session(state: State, user_id: id, connection_id: usize) {
+    let _user_lock = state.user_locks.write(user_id).await;
+    let mut update_last_seen = false;
+
     if let Entry::Occupied(mut entry) = state.users.entry(user_id) {
         let user = entry.get_mut();
 
         if user.connections.len() <= 1 {
             entry.remove();
-
-            if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
-                warn!("Failed to update last_seen for {}: {:?}", user_id, e);
-            }
+            update_last_seen = true;
         } else {
-            user.connections
-                .retain(|c| c.connection_id != connection_id);
+            user.connections.retain(|c| c.id != connection_id);
+        }
+    }
+
+    if update_last_seen {
+        if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
+            warn!("Failed to update last_seen for {}: {:?}", user_id, e);
         }
     }
 }
