@@ -61,9 +61,11 @@ async fn main() -> std::io::Result<()> {
 
     let messages = MessageService::new(message_store);
 
+    let hasher = ahash::RandomState::new();
+
     let state = web::Data::new(AppState {
-        users: DashMap::with_shard_amount(512),
-        groups: DashMap::with_shard_amount(128),
+        users: DashMap::with_hasher_and_shard_amount(hasher.clone(), 512),
+        groups: DashMap::with_hasher_and_shard_amount(hasher, 128),
         user_locks: LockMap::new(),
         group_locks: LockMap::new(),
         pool,

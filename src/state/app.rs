@@ -8,9 +8,9 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 
 pub struct AppState {
-    pub users: DashMap<id, user::Session>,
+    pub users: DashMap<id, user::Session, ahash::RandomState>,
     pub user_locks: LockMap<id>,
-    pub groups: DashMap<id, Group>,
+    pub groups: DashMap<id, Group, ahash::RandomState>,
     pub group_locks: LockMap<id>,
     pub pool: PgPool,
     pub snowflake: Snowflake,
