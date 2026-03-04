@@ -1,6 +1,7 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 pub struct LockMap<K: Hash + Eq + Clone> {
@@ -16,7 +17,7 @@ impl<K: Hash + Eq + Clone> LockMap<K> {
 
     pub async fn read(&self, key: K) -> KeyReadGuard<'_, K> {
         let lock_arc = {
-            let mut map = self.map.lock().unwrap();
+            let mut map = self.map.lock();
             map.entry(key.clone())
                 .or_insert_with(|| Arc::new(RwLock::new(())))
                 .clone()
@@ -34,7 +35,7 @@ impl<K: Hash + Eq + Clone> LockMap<K> {
 
     pub async fn write(&self, key: K) -> KeyWriteGuard<'_, K> {
         let lock_arc = {
-            let mut map = self.map.lock().unwrap();
+            let mut map = self.map.lock();
             map.entry(key.clone())
                 .or_insert_with(|| Arc::new(RwLock::new(())))
                 .clone()
@@ -51,7 +52,7 @@ impl<K: Hash + Eq + Clone> LockMap<K> {
     }
 
     fn cleanup(&self, key: &K, lock_arc: &Arc<RwLock<()>>) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock();
 
         if Arc::strong_count(lock_arc) <= 3 {
             map.remove(key);
@@ -116,9 +117,9 @@ mod tests {
 
         let writer1 = tokio::spawn(async move {
             let _guard = lock_map_clone.write(key_clone).await;
-            exec_clone.lock().unwrap().push("writer1_start");
+            exec_clone.lock().push("writer1_start");
             sleep(Duration::from_millis(100)).await;
-            exec_clone.lock().unwrap().push("writer1_end");
+            exec_clone.lock().push("writer1_end");
         });
 
         sleep(Duration::from_millis(20)).await;
@@ -129,8 +130,8 @@ mod tests {
 
         let writer2 = tokio::spawn(async move {
             let _guard = lock_map_clone2.write(key_clone2).await;
-            exec_clone2.lock().unwrap().push("writer2_start");
-            exec_clone2.lock().unwrap().push("writer2_end");
+            exec_clone2.lock().push("writer2_start");
+            exec_clone2.lock().push("writer2_end");
         });
 
         let lock_map_clone3 = lock_map.clone();
@@ -143,14 +144,14 @@ mod tests {
 
         let _ = tokio::join!(writer1, writer2, reader_diff);
 
-        let exec = execution_order.lock().unwrap();
+        let exec = execution_order.lock();
         assert_eq!(exec[0], "writer1_start");
         assert_eq!(exec[1], "writer1_end");
         assert_eq!(exec[2], "writer2_start");
 
         sleep(Duration::from_millis(50)).await;
 
-        let map_inner = lock_map.map.lock().unwrap();
+        let map_inner = lock_map.map.lock();
         assert!(
             map_inner.is_empty(),
             "Map temizlenmedi, içinde hala kilitler var: {:?}",
