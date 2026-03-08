@@ -1,42 +1,81 @@
+mod api;
 mod config;
-mod phase1;
-mod phase2;
-mod state;
+mod ws;
 
-use config::{ActionDistributions, SimulationConfig};
-use log::{error, info};
-use state::AppState;
+use api::ApiClient;
+use config::Config;
+use futures::{StreamExt, stream};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    info!("Starting Stress Tester...");
+    let config = Arc::new(Config::default());
 
-    // 1. Load Configuration
-    let config = SimulationConfig::default();
-    let distributions = ActionDistributions::default();
-    info!("Configuration loaded. Target users: {}", config.user_count);
+    let local_ips: Vec<IpAddr> = config
+        .local_ips
+        .iter()
+        .map(|s| IpAddr::from_str(s).expect("Invalid IP address in config"))
+        .collect();
 
-    // 2. Initialize State
-    let state = Arc::new(AppState::new());
+    let clients = local_ips
+        .iter()
+        .map(|ip| ApiClient::new(config.api_url.clone(), *ip).unwrap())
+        .collect::<Vec<ApiClient>>();
 
-    // 3. Phase 1: Preparation (HTTP)
-    info!("Starting Phase 1: Preparation...");
-    if let Err(e) = phase1::run(state.clone(), &config, &distributions).await {
-        error!("Phase 1 failed: {}", e);
-        return Err(e);
+    println!(
+        "Starting stress test: {} users with {} parallel requests",
+        config.users_to_create, config.concurrency
+    );
+
+    let remote_addr = config.addr.parse::<SocketAddr>().unwrap();
+
+    let tasks = (0..config.users_to_create).map(|i| {
+        let client = clients[i % clients.len()].clone();
+
+        let local_ip = local_ips[i % local_ips.len()];
+
+        async move {
+            match client.register_user(i).await {
+                Ok(Some(token)) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = ws::connect_and_listen(local_ip, remote_addr, token).await {
+                            log::warn!("{}", e);
+                        }
+                    });
+                }
+                Ok(None) => {
+                    log::warn!("User {} registered but no session cookie received", i);
+                }
+                Err(e) => {
+                    log::warn!("{}", e);
+                }
+            }
+        }
+    });
+
+    let pb = ProgressBar::new(config.users_to_create as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+
+    let mut stream = stream::iter(tasks).buffer_unordered(config.concurrency);
+
+    while let Some(_) = stream.next().await {
+        pb.inc(1);
     }
-    info!("Phase 1 Complete.");
+    pb.finish_with_message("Registration Complete");
 
-    // 4. Phase 2: Execution (WebSocket)
-    info!("Starting Phase 2: Execution...");
-    if let Err(e) = phase2::run(state.clone(), &config, &distributions).await {
-        error!("Phase 2 failed: {}", e);
-        return Err(e);
-    }
-    info!("Phase 2 Complete.");
+    println!("All users processed. Keeping WS connections open. Press Ctrl+C to stop.");
+    tokio::signal::ctrl_c().await?;
 
     Ok(())
 }
