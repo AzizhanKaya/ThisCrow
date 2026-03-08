@@ -5,9 +5,9 @@ use crate::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use flume::Sender;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tokio::sync::mpsc::UnboundedSender;
 
 pub struct Session {
     pub state: State,
@@ -16,7 +16,7 @@ pub struct Session {
 
 pub struct Connection {
     pub id: usize,
-    pub writer: UnboundedSender<Bytes>,
+    pub writer: Sender<Bytes>,
 }
 
 #[derive(Clone, Serialize, Debug)]

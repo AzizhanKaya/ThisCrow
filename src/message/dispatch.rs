@@ -1,5 +1,6 @@
 use super::ack::Ack;
 use super::event;
+use crate::TOKIO_RT;
 use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::{Event, Message, MessageType};
@@ -24,10 +25,10 @@ struct MultiData {
 }
 
 pub async fn handle_bytes(
-    user_id: id,
-    state: &State,
     bytes: Bytes,
+    user_id: id,
     connection_id: usize,
+    state: &State,
 ) -> Result<()> {
     if let Ok(mut message) = rmp_serde::from_slice::<Message<Text>>(&bytes) {
         let message_id = message.id;
@@ -69,7 +70,7 @@ pub async fn handle_bytes(
 
         let state = state.clone();
 
-        tokio::spawn(async move {
+        TOKIO_RT.spawn(async move {
             if let Err(e) = event::handle_event(state, event).await {
                 log::warn!("Error while handling event: {:?}", e);
             }
