@@ -145,7 +145,7 @@ pub fn draw_tui(f: &mut Frame, app: &AppState) {
 
     let user_datasets = vec![
         Dataset::default()
-            .marker(symbols::Marker::Dot)
+            .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Yellow))
             .graph_type(GraphType::Line)
             .data(&app.users_history),
@@ -197,7 +197,7 @@ pub fn draw_tui(f: &mut Frame, app: &AppState) {
 
     let ping_datasets = vec![
         Dataset::default()
-            .marker(symbols::Marker::Dot)
+            .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .graph_type(GraphType::Line)
             .data(&app.pings_history),

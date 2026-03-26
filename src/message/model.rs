@@ -1,17 +1,14 @@
 use crate::id::id;
-use chrono::{DateTime, Utc};
-
+use crate::message::snowflake::snowflake_id;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message<T> {
-    pub id: id,
+    pub id: snowflake_id,
     #[serde(skip_deserializing, default)]
     pub from: id,
     pub to: id,
     pub data: T,
-    #[serde(with = "chrono::serde::ts_milliseconds")]
-    pub time: DateTime<Utc>,
     #[serde(flatten)]
     pub r#type: MessageType,
 }
@@ -33,7 +30,6 @@ impl<T> Message<T> {
             id: self.id,
             from: self.from,
             to: self.to,
-            time: self.time,
             r#type: self.r#type,
             data: f(self.data),
         }
@@ -47,7 +43,6 @@ impl<T: Default> Default for Message<T> {
             from: Default::default(),
             to: Default::default(),
             data: Default::default(),
-            time: Utc::now(),
             r#type: Default::default(),
         }
     }

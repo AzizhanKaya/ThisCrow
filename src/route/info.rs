@@ -29,12 +29,6 @@ async fn search_user(
     Ok(MsgPack(users.into_iter().map(|u| u.into()).collect()))
 }
 
-#[derive(Deserialize)]
-struct UserQuery {
-    id: Option<id>,
-    username: Option<String>,
-}
-
 #[derive(Serialize)]
 struct UserInfo {
     id: id,
@@ -62,78 +56,44 @@ impl From<state::user::State> for UserInfo {
     }
 }
 
-async fn get_user(state: State, query: web::Query<UserQuery>) -> Result<MsgPack<UserInfo>, Error> {
-    if let Some(uid) = query.id {
-        if let Some(user) = state.users.get(&uid) {
-            return Ok(MsgPack(user.state.clone().into()));
-        }
+async fn get_user(state: State, user_id: web::Path<id>) -> Result<MsgPack<UserInfo>, Error> {
+    let user_id = user_id.into_inner();
 
-        let user = db::user::get_user(&state.pool, uid)
-            .await
-            .map_err(|e| {
-                warn!("Error while getting user: {}", e);
-                error::ErrorInternalServerError("Error while getting user")
-            })?
-            .ok_or(error::ErrorNotFound("User not found"))?;
+    if let Some(user) = state.users.get(&user_id) {
+        return Ok(MsgPack(user.state.clone().into()));
+    }
 
-        let friends = db::user::get_friends(&state.pool, uid).await.map_err(|e| {
+    let user = db::user::get_user(&state.pool, user_id)
+        .await
+        .map_err(|e| {
+            warn!("Error while getting user: {}", e);
+            error::ErrorInternalServerError("Error while getting user")
+        })?;
+
+    let friends = db::user::get_friends(&state.pool, user_id)
+        .await
+        .map_err(|e| {
             warn!("Error while getting user friends: {}", e);
             error::ErrorInternalServerError("Error while getting user friends")
         })?;
 
-        let groups = db::user::get_groups(&state.pool, uid).await.map_err(|e| {
+    let groups = db::user::get_groups(&state.pool, user_id)
+        .await
+        .map_err(|e| {
             warn!("Error while getting user groups: {}", e);
             error::ErrorInternalServerError("Error while getting user groups")
         })?;
 
-        return Ok(MsgPack(UserInfo {
-            id: user.id,
-            version: id(0),
-            username: user.username,
-            name: user.name,
-            avatar: user.avatar,
-            status: Status::Offline,
-            friends,
-            groups,
-        }));
-    }
-
-    if let Some(username) = &query.username {
-        let user = db::user::get_user_by_username(&state.pool, username)
-            .await
-            .map_err(|e| {
-                warn!("Error while getting user: {}", e);
-                error::ErrorInternalServerError("Error while getting user")
-            })?
-            .ok_or(error::ErrorNotFound("User not found"))?;
-
-        let friends = db::user::get_friends(&state.pool, user.id)
-            .await
-            .map_err(|e| {
-                warn!("Error while getting user friends: {}", e);
-                error::ErrorInternalServerError("Error while getting user friends")
-            })?;
-
-        let groups = db::user::get_groups(&state.pool, user.id)
-            .await
-            .map_err(|e| {
-                warn!("Error while getting user groups: {}", e);
-                error::ErrorInternalServerError("Error while getting user groups")
-            })?;
-
-        return Ok(MsgPack(UserInfo {
-            id: user.id,
-            version: id(0),
-            username: user.username,
-            name: user.name,
-            avatar: user.avatar,
-            status: Status::Offline,
-            friends,
-            groups,
-        }));
-    }
-
-    Err(error::ErrorBadRequest("No query parameters provided"))
+    Ok(MsgPack(UserInfo {
+        id: user.id,
+        version: id(0),
+        username: user.username,
+        name: user.name,
+        avatar: user.avatar,
+        status: Status::Offline,
+        friends,
+        groups,
+    }))
 }
 
 #[derive(Serialize)]
@@ -256,11 +216,25 @@ async fn get_groups(
     ))
 }
 
+async fn get_public_key(state: State, user_id: web::Path<id>) -> Result<MsgPack<Vec<u8>>, Error> {
+    let user_id = user_id.into_inner();
+
+    let user = db::user::get_user(&state.pool, user_id)
+        .await
+        .map_err(|e| {
+            warn!("Error while getting user: {}", e);
+            error::ErrorInternalServerError("Error while getting user")
+        })?;
+
+    Ok(MsgPack(user.public_key))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/info")
             .route("/search_user", web::get().to(search_user))
-            .route("/user", web::get().to(get_user))
+            .route("/user/{id}", web::get().to(get_user))
+            .route("/public_key/{id}", web::get().to(get_public_key))
             .route("/users", web::post().to(get_users))
             .route("/groups", web::post().to(get_groups)),
     );

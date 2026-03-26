@@ -1,6 +1,8 @@
 use async_lock::{RwLock, RwLockReadGuardArc, RwLockWriteGuardArc};
 use parking_lot::Mutex;
+use std::backtrace::Backtrace;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -8,7 +10,7 @@ pub struct LockMap<K: Hash + Eq + Clone> {
     map: Mutex<HashMap<K, Arc<RwLock<()>>>>,
 }
 
-impl<K: Hash + Eq + Clone> LockMap<K> {
+impl<K: Hash + Eq + Clone + Debug> LockMap<K> {
     pub fn new() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
@@ -65,13 +67,13 @@ enum GuardType {
     Write(RwLockWriteGuardArc<()>),
 }
 
-pub struct KeyGuard<'a, K: Hash + Eq + Clone> {
+pub struct KeyGuard<'a, K: Hash + Eq + Clone + Debug> {
     map: &'a LockMap<K>,
     key: K,
     guard: Option<GuardType>,
 }
 
-impl<'a, K: Hash + Eq + Clone> Drop for KeyGuard<'a, K> {
+impl<'a, K: Hash + Eq + Clone + Debug> Drop for KeyGuard<'a, K> {
     fn drop(&mut self) {
         drop(self.guard.take());
         self.map.cleanup(&self.key);

@@ -43,7 +43,11 @@ pub async fn connect_and_listen(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let socket = TcpSocket::new_v4()?;
+    socket.set_recv_buffer_size(1024)?;
+    socket.set_send_buffer_size(1024)?;
+
     socket.bind(SocketAddr::new(local_ip, 0))?;
+
     let stream = socket.connect(remote_addr).await?;
     let _ = stream.set_nodelay(true);
 

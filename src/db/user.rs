@@ -12,6 +12,7 @@ use sqlx::{Pool, Postgres};
 type id = crate::id::id;
 
 #[derive(Serialize, sqlx::FromRow, Default, Clone)]
+#[serde(default)]
 pub struct User {
     pub id: id,
     pub avatar: Option<String>,
@@ -25,6 +26,8 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing, skip_deserializing)]
     pub last_seen: Option<DateTime<Utc>>,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub public_key: Vec<u8>,
 }
 
 pub async fn login(pool: &Pool<Postgres>, username: &str, password: &str) -> Option<User> {
@@ -55,7 +58,8 @@ pub async fn register(
     name: &str,
     email: &str,
     password: &str,
-) -> Result<User> {
+    public_key: &[u8],
+) -> Result<id> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
 
@@ -63,38 +67,22 @@ pub async fn register(
         .hash_password(password.as_bytes(), &salt)
         .map_err(|e| anyhow!("Hash error: {}", e))?;
 
-    let user = sqlx::query_as!(
-        User,
+    let user_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO users (username, name, email, password_hash)
-        VALUES ($1, $2, $3, $4)
-        RETURNING *
+        INSERT INTO users (username, name, email, password_hash, public_key)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id as "id:id"
         "#,
         username,
         name,
         email,
         password_hash.to_string(),
+        public_key,
     )
     .fetch_one(pool)
     .await?;
 
-    Ok(user)
-}
-
-pub async fn has_registered(pool: &Pool<Postgres>, username: &str, email: &str) -> Result<bool> {
-    let exists: Option<bool> = sqlx::query_scalar!(
-        r#"
-        SELECT EXISTS(
-            SELECT 1 FROM users WHERE email = $1 OR username = $2
-        )
-        "#,
-        email,
-        username
-    )
-    .fetch_one(pool)
-    .await?;
-
-    Ok(exists.unwrap_or(false))
+    Ok(user_id)
 }
 
 pub async fn get_friends(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
@@ -108,7 +96,7 @@ pub async fn get_friends(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, 
             SELECT user_1 FROM friends WHERE user_2 = $1
         )
         "#,
-        *user_id as i64
+        *user_id
     )
     .fetch_all(pool)
     .await;
@@ -123,7 +111,7 @@ pub async fn friend_requests(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<i
         FROM friend_requests
         WHERE "to" = $1
         "#,
-        *user_id as i64
+        *user_id
     )
     .fetch_all(pool)
     .await
@@ -139,7 +127,7 @@ pub async fn outgoing_friend_requests(
         FROM friend_requests
         WHERE "from" = $1
         "#,
-        *user_id as i64
+        *user_id
     )
     .fetch_all(pool)
     .await
@@ -152,8 +140,8 @@ pub async fn friend_request(pool: &Pool<Postgres>, from: id, to: id) -> Result<(
         VALUES ($1, $2)
         ON CONFLICT DO NOTHING
         "#,
-        *from as i64,
-        *to as i64
+        *from,
+        *to
     )
     .execute(pool)
     .await?;
@@ -172,8 +160,8 @@ pub async fn friend_accept(pool: &Pool<Postgres>, from: id, to: id) -> Result<bo
                 WHERE "from" = $1 AND "to" = $2
             )
         "#,
-        *to as i64,
-        *from as i64
+        *to,
+        *from
     )
     .fetch_one(&mut *tx)
     .await?
@@ -191,8 +179,8 @@ pub async fn friend_accept(pool: &Pool<Postgres>, from: id, to: id) -> Result<bo
         VALUES ($1, $2)
         ON CONFLICT DO NOTHING
         "#,
-        *user_1 as i64,
-        *user_2 as i64
+        *user_1,
+        *user_2
     )
     .execute(&mut *tx)
     .await?;
@@ -202,8 +190,8 @@ pub async fn friend_accept(pool: &Pool<Postgres>, from: id, to: id) -> Result<bo
         DELETE FROM friend_requests
         WHERE "from" = $1 AND "to" = $2
         "#,
-        *to as i64,
-        *from as i64
+        *to,
+        *from
     )
     .execute(&mut *tx)
     .await?;
@@ -222,8 +210,8 @@ pub async fn friend_remove(pool: &Pool<Postgres>, from: id, to: id) -> Result<()
         DELETE FROM friends
         WHERE user_1 = $1 AND user_2 = $2
         "#,
-        *user_1 as i64,
-        *user_2 as i64
+        *user_1,
+        *user_2
     )
     .execute(&mut *tx)
     .await?;
@@ -233,8 +221,8 @@ pub async fn friend_remove(pool: &Pool<Postgres>, from: id, to: id) -> Result<()
         DELETE FROM friend_requests
         WHERE "from" = $1 AND "to" = $2
         "#,
-        *from as i64,
-        *to as i64
+        *from,
+        *to
     )
     .execute(&mut *tx)
     .await?;
@@ -251,8 +239,8 @@ pub async fn are_friends(
     let (user_1, user_2) = user_1.sort_pair(user_2);
     let exists = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM friends WHERE user_1 = $1 AND user_2 = $2)",
-        *user_1 as i64,
-        *user_2 as i64
+        *user_1,
+        *user_2
     )
     .fetch_one(pool)
     .await?
@@ -261,16 +249,16 @@ pub async fn are_friends(
     Ok(exists)
 }
 
-pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Result<Option<User>, sqlx::Error> {
+pub async fn get_user(pool: &Pool<Postgres>, user_id: id) -> Result<User, sqlx::Error> {
     sqlx::query_as!(
         User,
         r#"
         SELECT * FROM users
         WHERE id = $1
         "#,
-        *user_id as i64
+        *user_id
     )
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await
 }
 
@@ -283,25 +271,9 @@ pub async fn get_groups(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, s
         WHERE gu.user_id = $1
         ORDER BY gu.position ASC
         "#,
-        *user_id as i64
+        *user_id
     )
     .fetch_all(pool)
-    .await
-}
-
-pub async fn get_user_by_username(
-    pool: &Pool<Postgres>,
-    username: &str,
-) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as!(
-        User,
-        r#"
-        SELECT * FROM users
-        WHERE username = $1
-        "#,
-        username
-    )
-    .fetch_optional(pool)
     .await
 }
 
@@ -334,7 +306,7 @@ pub async fn update_last_seen(
     sqlx::query!(
         "UPDATE users SET last_seen = $1 WHERE id = $2",
         time,
-        *user_id as i64
+        *user_id
     )
     .execute(pool)
     .await?;
@@ -356,7 +328,7 @@ pub async fn get_users_by_ids(
         SELECT u.* FROM users u
         WHERE u.id = ANY($1)
         "#,
-        &users.iter().map(|id| i64::from(*id)).collect::<Vec<i64>>()
+        &users as _
     )
     .fetch_all(pool)
     .await?;
@@ -376,7 +348,7 @@ pub async fn update_user(
         SET name = COALESCE($2, name), avatar = COALESCE($3, avatar)
         WHERE id = $1
         "#,
-        *user_id as i64,
+        *user_id,
         name,
         avatar
     )

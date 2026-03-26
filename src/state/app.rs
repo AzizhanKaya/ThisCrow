@@ -1,7 +1,7 @@
 use crate::id::id;
 use crate::lockmap::LockMap;
-use crate::message::Snowflake;
 use crate::message::service::MessageService;
+use crate::message::snowflake::SnowflakeGenerator;
 use crate::state::group::Group;
 use crate::state::user;
 use dashmap::DashMap;
@@ -13,6 +13,6 @@ pub struct AppState {
     pub groups: DashMap<id, Group, ahash::RandomState>,
     pub group_locks: LockMap<id>,
     pub pool: PgPool,
-    pub snowflake: Snowflake,
+    pub snowflake: SnowflakeGenerator,
     pub messages: MessageService,
 }

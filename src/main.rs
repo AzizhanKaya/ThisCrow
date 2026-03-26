@@ -6,9 +6,8 @@ use crate::lockmap::LockMap;
 use crate::message::service::MessageService;
 use crate::message::snowflake::SnowflakeGenerator;
 use actix_cors::Cors;
-use actix_governor::{Governor, GovernorConfigBuilder};
-use actix_web::middleware::Logger;
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, middleware::Compress, web};
+use actix_governor::GovernorConfigBuilder;
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dashmap::DashMap;
 use dotenv::dotenv;
 use once_cell::sync::Lazy;
@@ -22,7 +21,6 @@ pub type State = web::Data<AppState>;
 mod db;
 mod id;
 mod lockmap;
-#[cfg(feature = "mail")]
 mod mail;
 mod message;
 mod middleware;
@@ -54,12 +52,15 @@ pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
         .expect("Tokio runtime error")
 });
 
+pub static DOMAIN: Lazy<String> = Lazy::new(|| env::var("DOMAIN").expect("DOMAIN must be set"));
+
 fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv().ok();
 
     route::upload::init();
-    route::auth::clear_otp_schedular();
+    #[cfg(feature = "mail")]
+    TOKIO_RT.spawn(route::auth::clear_otp_schedular());
 
     let pool = TOKIO_RT
         .block_on(db_connection())
@@ -82,7 +83,7 @@ fn main() -> std::io::Result<()> {
         messages,
     });
 
-    for _ in 0..4 {
+    for _ in 0..6 {
         let state = state.clone();
 
         std::thread::spawn(move || {
@@ -91,11 +92,13 @@ fn main() -> std::io::Result<()> {
                 .build()
                 .expect("Monoio runtime error");
 
+            log::info!("Monoio WebSocket server listening on {}", 8081);
+
             rt.block_on(route::ws::listen(8081, state));
         });
     }
 
-    let governor = GovernorConfigBuilder::default()
+    let _governor = GovernorConfigBuilder::default()
         .seconds_per_request(10)
         .burst_size(50)
         .key_extractor(ratelimiter::UserKeyExtractor)
@@ -116,8 +119,6 @@ fn main() -> std::io::Result<()> {
                 .max_age(3600);
 
             App::new()
-                .wrap(Compress::default())
-                .wrap(Logger::default())
                 .wrap(cors)
                 .app_data(web::PayloadConfig::new(1024))
                 .app_data(state.clone())
@@ -128,10 +129,12 @@ fn main() -> std::io::Result<()> {
                         .service(
                             web::scope("")
                                 .wrap(middleware::AuthMiddleware)
-                                .wrap(Governor::new(&governor))
+                                //.wrap(Governor::new(&governor))
                                 .configure(route::upload::configure)
                                 .configure(route::state::configure)
-                                .configure(route::info::configure),
+                                .configure(route::info::configure)
+                                .configure(route::message::configure)
+                                .configure(route::invitation::configure),
                         ),
                 )
         })

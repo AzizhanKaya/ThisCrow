@@ -1,6 +1,8 @@
+use crate::db::message::StoredMessage;
+use crate::id::id;
+use crate::message::snowflake::snowflake_id;
 use crate::state::group::Group;
 use crate::state::user;
-use crate::{id::id as Id, state::group::ChannelType};
 use serde::Serialize;
 
 #[serde_with::skip_serializing_none]
@@ -10,12 +12,15 @@ pub enum Ack {
     #[default]
     None,
     Error(String),
-    Received(Id),
+
+    // Message
+    Received(snowflake_id),
+    Deleted(snowflake_id),
+    Overwritten(StoredMessage),
 
     // USER
     Initialized(Box<user::State>),
     ChangedStatus(user::Status),
-    AssignedRole,
     AddedFriend,
     ReceivedFriendRequest,
     SentFriendRequest,
@@ -28,8 +33,8 @@ pub enum Ack {
     // GROUP
     Subscribed(Box<Group>),
     Unsubscribed,
-    AddedMember,
-    RemovedMember,
+    JoinedMember,
+    LeftMember,
     CreatedGroup {
         name: String,
         icon: Option<String>,
@@ -38,7 +43,11 @@ pub enum Ack {
     CreatedChannel {
         name: String,
         position: usize,
-        r#type: ChannelType,
+        is_voice: bool,
+        title: Option<String>,
+    },
+    AssignedRole {
+        role_id: id,
     },
     CreatedRole {
         name: String,
@@ -52,6 +61,7 @@ pub enum Ack {
     },
     UpdatedChannel {
         name: Option<String>,
+        #[serialize_always]
         title: Option<String>,
         position: Option<usize>,
     },
@@ -63,4 +73,9 @@ pub enum Ack {
     DeletedGroup,
     DeletedChannel,
     DeletedRole,
+
+    // VOICE
+    JoinedVoice(id),
+    ExitedVoice(id),
+    MovedToVoice(id),
 }

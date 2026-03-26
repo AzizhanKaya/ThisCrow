@@ -8,7 +8,6 @@ use bytes::Bytes;
 use derive_more::Constructor;
 use serde::Deserialize;
 use serde::Serialize;
-use serde::Serializer;
 use std::collections::{HashMap, HashSet};
 
 bitflags! {
@@ -22,24 +21,25 @@ bitflags! {
         const KICK_MEMBERS         = 1 << 5;
         const BAN_MEMBERS          = 1 << 6;
         const CREATE_INVITE        = 1 << 7;
+        const DELETE_INVITE        = 1 << 8;
 
         // ─── Text ───────────────────────────
-        const VIEW_CHANNEL         = 1 << 8;
-        const VIEW_MESSAGES        = 1 << 9;
-        const SEND_MESSAGE        = 1 << 10;
-        const SEND_TTS_MESSAGES    = 1 << 11;
-        const MANAGE_MESSAGES      = 1 << 12;
-        const EMBED_LINKS          = 1 << 13;
-        const ATTACH_FILES         = 1 << 14;
-        const READ_MESSAGE_HISTORY = 1 << 15;
-        const MENTION_EVERYONE     = 1 << 16;
+        const VIEW_CHANNEL         = 1 << 9;
+        const VIEW_MESSAGES        = 1 << 10;
+        const SEND_MESSAGE        = 1 << 11;
+        const SEND_TTS_MESSAGES    = 1 << 12;
+        const MANAGE_MESSAGES      = 1 << 13;
+        const EMBED_LINKS          = 1 << 14;
+        const ATTACH_FILES         = 1 << 15;
+        const READ_MESSAGE_HISTORY = 1 << 16;
+        const MENTION_EVERYONE     = 1 << 17;
 
         // ─── Voice ──────────────────────────
-        const CONNECT              = 1 << 17;
-        const SPEAK                = 1 << 18;
-        const MUTE_MEMBERS         = 1 << 19;
-        const DEAFEN_MEMBERS       = 1 << 20;
-        const MOVE_MEMBERS         = 1 << 21;
+        const CONNECT              = 1 << 18;
+        const SPEAK                = 1 << 19;
+        const MUTE_MEMBERS         = 1 << 20;
+        const DEAFEN_MEMBERS       = 1 << 21;
+        const MOVE_MEMBERS         = 1 << 22;
     }
 }
 
@@ -54,17 +54,15 @@ pub struct Group {
     pub icon: Option<String>,
     pub name: String,
     pub version: id,
-    #[serde(serialize_with = "serialize_as_vec")]
+    pub owner: id,
     pub members: HashMap<UserId, Member>,
-    #[serde(serialize_with = "serialize_as_vec")]
     pub roles: HashMap<RoleId, Role>,
-    #[serde(serialize_with = "serialize_as_vec")]
     pub channels: HashMap<ChannelId, Channel>,
     #[serde(skip)]
     pub subscribers: HashSet<UserId>,
 }
 
-#[derive(Serialize, Clone, Constructor)]
+#[derive(Serialize, Clone, Constructor, Default)]
 pub struct Member {
     id: UserId,
     name: Option<String>,
@@ -87,15 +85,16 @@ pub struct Channel {
     name: String,
     title: Option<String>,
     position: usize,
-    r#type: ChannelType,
+    #[serde(flatten)]
+    pub r#type: ChannelType,
     #[serde(skip)]
     permission_overrides: Vec<PermissionOverride>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase", tag = "type", content = "users")]
 pub enum ChannelType {
-    Voice,
+    Voice(HashSet<id>),
     Text,
 }
 
@@ -129,7 +128,7 @@ impl Group {
             }
         }
 
-        if perms.contains(Permissions::ADMINISTRATOR) {
+        if perms.contains(Permissions::ADMINISTRATOR) || self.owner == user_id {
             return Permissions::all();
         }
 
@@ -171,7 +170,8 @@ impl Group {
     }
 
     fn next_version(&mut self) -> id {
-        self.version.add(1)
+        self.version += 1;
+        self.version
     }
 
     pub fn get_version(&self) -> id {
@@ -189,6 +189,15 @@ impl Group {
     pub fn notify(&self, message: Message<Ack>, state: &State) {
         let message = Bytes::from(msgpack!(message));
         self.subscribers.iter().for_each(|user_id| {
+            if let Some(user) = state.users.get(user_id) {
+                user.send_bytes(message.clone());
+            }
+        });
+    }
+
+    pub fn notify_all(&self, message: Message<Ack>, state: &State) {
+        let message = Bytes::from(msgpack!(message));
+        self.members.keys().for_each(|user_id| {
             if let Some(user) = state.users.get(user_id) {
                 user.send_bytes(message.clone());
             }
@@ -231,16 +240,21 @@ impl Group {
         &mut self,
         channel_id: ChannelId,
         name: String,
-        r#type: ChannelType,
+        is_voice: bool,
+        title: Option<String>,
     ) -> usize {
         let position = self.channels.len() + 1;
 
         let channel = Channel {
             id: channel_id,
             name,
-            title: None,
+            title,
             position,
-            r#type,
+            r#type: if is_voice {
+                ChannelType::Voice(HashSet::new())
+            } else {
+                ChannelType::Text
+            },
             permission_overrides: Vec::new(),
         };
 
@@ -368,12 +382,4 @@ impl Group {
             self.next_version();
         }
     }
-}
-
-fn serialize_as_vec<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    V: Serialize,
-{
-    serializer.collect_seq(map.values())
 }

@@ -1,23 +1,25 @@
 use crate::db;
-use crate::mail;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::create_jwt};
-use actix_web::http::header;
 use actix_web::{
     Error, HttpResponse, cookie::Cookie, cookie::time::Duration as CookieDuration, error, web,
 };
-use chrono::DateTime;
-use chrono::Duration;
-use chrono::Utc;
+
+#[cfg(feature = "mail")]
+use dashmap::DashMap;
 use log::warn;
-use once_cell::sync::Lazy;
-use once_cell::sync::OnceCell;
-use rand::Rng;
-use rand::distr::Alphanumeric;
 use serde::Deserialize;
-use std::collections::HashMap;
-use tokio::sync::Mutex;
-use tokio::time::{self, Duration as TokioDuration};
+
+#[cfg(feature = "mail")]
+use {
+    crate::DOMAIN,
+    crate::mail,
+    actix_web::http::header,
+    chrono::{DateTime, Duration, Utc},
+    once_cell::sync::Lazy,
+    rand::{Rng, distr::Alphanumeric},
+    tokio::time::{self, Duration as TokioDuration},
+};
 
 // Authentication
 
@@ -47,8 +49,9 @@ async fn login(login: MsgPack<Login>, state: State) -> Result<HttpResponse, Erro
     }
 }
 
-static EMAIL_OTP_MAP: Lazy<Mutex<HashMap<String, (Register, DateTime<Utc>)>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+#[cfg(feature = "mail")]
+static EMAIL_OTP_MAP: Lazy<DashMap<String, (Register, DateTime<Utc>)>> =
+    Lazy::new(|| DashMap::new());
 
 #[derive(Deserialize)]
 struct Register {
@@ -56,57 +59,70 @@ struct Register {
     name: String,
     password: String,
     email: String,
+    public_key: Vec<u8>,
 }
 
 async fn register(register: MsgPack<Register>, state: State) -> Result<HttpResponse, Error> {
-    match db::user::has_registered(&state.pool, &register.username, &register.email).await {
-        Ok(true) => {
-            return Err(error::ErrorConflict("This email already in use"));
-        }
-        Err(e) => {
-            return Err(error::ErrorInternalServerError(e));
-        }
-        _ => {}
-    }
-
-    let otp = rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(10)
-        .map(char::from)
-        .collect();
-
-    if cfg!(debug_assertions) {
-        println!(
-            r#"http://localhost:8080/api/auth/verify_email?email={}&otp={}"#,
-            register.email, otp
+    #[cfg(not(feature = "mail"))]
+    {
+        let id = db::user::register(
+            &state.pool,
+            &register.username,
+            &register.name,
+            &register.email,
+            &register.password,
+            &register.public_key,
         )
-    } else {
-        mail::send_email(
-        &register.email,
-        "ThisCrow Email Verification",
-        format!(
-            r#"<a href="https://thiscrow.vate.world/api/auth/verify_email?email={}&otp={}">Verify your registration</a>"#,
-            register.email, otp)
-        ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"));
+        .await
+        .map_err(|e| {
+            warn!("Error while register user: {}", e);
+            error::ErrorInternalServerError("Error while registering")
+        })?;
+
+        let token = create_jwt(id);
+
+        Ok(HttpResponse::Ok()
+            .cookie(
+                Cookie::build("session", &token)
+                    .path("/")
+                    .http_only(true)
+                    .max_age(CookieDuration::days(1))
+                    .finish(),
+            )
+            .finish())
     }
 
-    EMAIL_OTP_MAP
-        .lock()
-        .await
-        .insert(otp, (register.0, Utc::now()));
-    Ok(HttpResponse::Ok().finish())
+    #[cfg(feature = "mail")]
+    {
+        let otp: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect();
+
+        mail::send_email(
+                &register.email,
+                "ThisCrow Email Verification",
+                format!(
+                    r#"<a href="https://{}/api/auth/verify_email?email={}&otp={}">Verify your registration</a>"#,
+                    *DOMAIN, register.email, otp)
+            ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"))?;
+
+        EMAIL_OTP_MAP.insert(otp, (register.0, Utc::now()));
+        Ok(HttpResponse::Ok().finish())
+    }
 }
 
+#[cfg(feature = "mail")]
 #[derive(Deserialize)]
 struct VerifyEmail {
     otp: String,
     email: String,
 }
 
+#[cfg(feature = "mail")]
 async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<HttpResponse, Error> {
-    let mut otp_map = EMAIL_OTP_MAP.lock().await;
-
-    let (user, exp) = otp_map
+    let (_otp, (user, exp)) = EMAIL_OTP_MAP
         .remove(&query.otp)
         .ok_or(error::ErrorUnauthorized("Invalid OTP"))?;
 
@@ -129,8 +145,7 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
     .map_err(|e| {
         warn!("Error while register user: {}", e);
         error::ErrorInternalServerError("Error while registering")
-    })?
-    .id;
+    })?;
 
     let token = create_jwt(id);
 
@@ -146,30 +161,30 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
         .finish())
 }
 
-pub fn clear_otp_schedular() {
-    static CLEAR_OTPS_ONCE: OnceCell<()> = OnceCell::new();
+#[cfg(feature = "mail")]
+pub async fn clear_otp_schedular() {
+    let mut interval = time::interval(TokioDuration::from_secs(300));
 
-    if CLEAR_OTPS_ONCE.set(()).is_ok() {
-        tokio::spawn(async {
-            let mut interval = time::interval(TokioDuration::from_secs(300));
+    loop {
+        interval.tick().await;
 
-            loop {
-                interval.tick().await;
-
-                EMAIL_OTP_MAP
-                    .lock()
-                    .await
-                    .retain(|_otp, (_user, exp)| *exp + Duration::minutes(5) > Utc::now());
-            }
-        });
+        EMAIL_OTP_MAP.retain(|_otp, (_user, exp)| *exp + Duration::minutes(5) > Utc::now());
     }
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    #[cfg(feature = "mail")]
     cfg.service(
         web::scope("/auth")
             .route("/login", web::post().to(login))
             .route("/register", web::post().to(register))
             .route("/verify_email", web::get().to(verify_email)),
+    );
+
+    #[cfg(not(feature = "mail"))]
+    cfg.service(
+        web::scope("/auth")
+            .route("/login", web::post().to(login))
+            .route("/register", web::post().to(register)),
     );
 }

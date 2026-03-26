@@ -7,14 +7,16 @@ use crate::message::Message;
 use crate::message::dispatch;
 use crate::middleware;
 use crate::msgpack;
+use crate::state::group::ChannelType;
 use crate::state::user;
+use crate::state::user::VoiceType;
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::Entry;
 use flume::Receiver;
 use flume::unbounded;
-use log::{info, warn};
+use log::warn;
 use monoio::io::sink::Sink;
 use monoio::io::stream::Stream;
 use monoio::net::{TcpListener, TcpStream};
@@ -22,6 +24,7 @@ use monoio::time::Duration;
 use monoio::time::timeout;
 use monoio_tungstenite::Message as WsMessage;
 use monoio_tungstenite::WebSocket;
+use monoio_tungstenite::error::Error as WsError;
 use monoio_tungstenite::protocol::WebSocketConfig;
 use once_cell::sync::Lazy;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -35,19 +38,26 @@ pub async fn listen(port: u16, state: State) -> Result<()> {
     socket.set_reuse_port(true)?;
     socket.set_reuse_address(true)?;
 
-    let addr: SocketAddr = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), port);
+    let tcp_buffer_size = 1024;
+
+    socket.set_recv_buffer_size(tcp_buffer_size)?;
+    socket.set_send_buffer_size(tcp_buffer_size)?;
+
+    let addr: SocketAddr = SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), port);
     socket.bind(&addr.into())?;
-    socket.listen(1024)?;
+    socket.listen(65535)?;
 
     let std_listener: std::net::TcpListener = socket.into();
     std_listener.set_nonblocking(true)?;
 
     let listener = TcpListener::from_std(std_listener)?;
-    info!("Monoio WebSocket server listening on {}", port);
 
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
+                if let Err(e) = stream.set_nodelay(true) {
+                    log::warn!("Nodelay ayarlanamadı: {}", e);
+                }
                 let state = state.clone();
                 monoio::spawn(async move {
                     ws_handshake(stream, state).await;
@@ -62,10 +72,10 @@ pub async fn listen(port: u16, state: State) -> Result<()> {
 
 static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
     WebSocketConfig::default()
-        .max_frame_size(Some(1024))
-        .max_message_size(Some(1024))
+        .max_frame_size(Some(16384))
+        .max_message_size(Some(16384))
         .write_buffer_size(1024)
-        .accept_unmasked_frames(true)
+        .accept_unmasked_frames(false)
 });
 
 async fn ws_handshake(stream: TcpStream, state: State) {
@@ -138,7 +148,12 @@ async fn initialize_session(
     let friends: HashSet<id> = friends_res?.into_iter().collect();
     let incoming = incoming_res?;
     let outgoing = outgoing_res?;
-    let dms: Vec<id> = state.messages.get_dms(user_id)?;
+    let dms: HashSet<id> = state
+        .messages
+        .get_dms(user_id)?
+        .into_iter()
+        .map(|(i, _)| i)
+        .collect();
 
     let user_state = user::State {
         id: user_id,
@@ -227,16 +242,33 @@ async fn handle_connection(
     state: State,
 ) {
     loop {
+        if rx.len() > 100 {
+            log::warn!("Message queue full (>100) for {user_id}, disconnecting.");
+            break;
+        }
+
+        while let Ok(message) = rx.try_recv() {
+            if let Err(e) = send_with_timeout(message, Duration::from_secs(5), &mut stream).await {
+                log::warn!("Failed to send message to {user_id}: {e:?}");
+                break;
+            }
+        }
+
+        stream.flush().await;
+
         monoio::select! {
             incoming = stream.next() => {
                  match incoming {
                     Some(Ok(message)) => {
-                        if handle_incoming(message, &mut stream, user_id, connection_id, &state).await.is_err() {
+                        if !handle_incoming(message, &mut stream, user_id, connection_id, &state).await {
                             break;
                         }
                     }
                     Some(Err(e)) => {
                         log::warn!("WebSocket read error ({user_id}): {:?}", e);
+                        if let WsError::Capacity(_) = e {
+                            continue;
+                        }
                         break;
                     }
                     None => break,
@@ -246,8 +278,7 @@ async fn handle_connection(
             outgoing = rx.recv_async() => {
                 match outgoing {
                     Ok(outgoing) => {
-                        let queue_len = rx.len();
-                        if handle_outgoing(outgoing, &mut stream, queue_len, user_id).await.is_err() {
+                        if !handle_outgoing(outgoing, &mut stream, user_id).await {
                             break;
                         }
                     }
@@ -268,7 +299,7 @@ async fn handle_incoming(
     user_id: id,
     connection_id: usize,
     state: &State,
-) -> Result<(), ()> {
+) -> bool {
     match message {
         WsMessage::Binary(bytes) => {
             if let Err(e) = dispatch::handle_bytes(bytes, user_id, connection_id, state).await {
@@ -278,37 +309,51 @@ async fn handle_incoming(
         WsMessage::Ping(ping) => {
             if let Err(e) = stream.send(WsMessage::Pong(ping)).await {
                 log::warn!("Failed to send pong to {user_id}: {:?}", e);
-                return Err(());
+                return false;
+            }
+
+            if let Err(e) = stream.flush().await {
+                log::warn!("Failed to flush pong to {user_id}: {:?}", e);
+                return false;
             }
         }
-        WsMessage::Close(_) => return Err(()),
+        WsMessage::Close(_) => return false,
         _ => log::warn!("Unhandled websocket message type from {user_id}: {message:?}"),
     }
 
-    Ok(())
+    true
 }
 
 #[inline]
-async fn handle_outgoing(
+async fn handle_outgoing(message: Bytes, stream: &mut WebSocket<TcpStream>, user_id: id) -> bool {
+    send_with_timeout(message, Duration::from_secs(5), stream)
+        .await
+        .inspect_err(|e| log::warn!("Failed to send message to {user_id}: {e:?}"))
+        .is_ok()
+}
+
+#[inline]
+async fn send_with_timeout(
     message: Bytes,
+    time: Duration,
     stream: &mut WebSocket<TcpStream>,
-    queue_len: usize,
-    user_id: id,
-) -> Result<(), ()> {
-    if queue_len > 100 {
-        log::warn!("Message queue full (>100) for {user_id}, disconnecting.");
-        return Err(());
-    }
+) -> Result<()> {
     let send_future = stream.send(WsMessage::Binary(message));
-    if timeout(Duration::from_secs(5), send_future).await.is_err() {
-        log::warn!("Send timeout or error for user: {user_id}");
-        return Err(());
+    match timeout(time, send_future).await {
+        Ok(send_result) => {
+            if let Err(e) = send_result {
+                anyhow::bail!("WebSocket send error: {e}");
+            }
+        }
+        Err(_) => {
+            anyhow::bail!("Send timeout");
+        }
     }
 
     Ok(())
 }
 
-async fn disconnect(user_id: id, connection_id: usize, state: State) {
+async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<()> {
     let _user_lock = state.user_locks.write(user_id).await;
     let mut update_last_seen = false;
 
@@ -316,7 +361,22 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) {
         let user = entry.get_mut();
 
         if user.connections.len() <= 1 {
-            entry.remove();
+            let mut user = entry.remove();
+
+            if let Some(voice) = user.state.voice.take() {
+                disconnect_voice(&user, voice.r#type, &state);
+            }
+
+            user.send_message_all(
+                Message {
+                    id: state.snowflake.generate(),
+                    from: user_id,
+                    data: Ack::ChangedStatus(user::Status::Offline),
+                    ..Default::default()
+                },
+                &state,
+            );
+
             update_last_seen = true;
         } else {
             user.connections.retain(|c| c.id != connection_id);
@@ -324,11 +384,50 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) {
     }
 
     if update_last_seen {
-        let pool = state.pool.clone();
-        TOKIO_RT.spawn(async move {
-            if let Err(e) = db::user::update_last_seen(&pool, user_id, Utc::now()).await {
-                warn!("Failed to update last_seen for {}: {:?}", user_id, e);
-            }
-        });
+        let state = state.clone();
+        TOKIO_RT
+            .spawn(async move {
+                if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
+                    warn!("Failed to update last_seen for {}: {:?}", user_id, e);
+                }
+            })
+            .await?;
     }
+
+    Ok(())
+}
+
+fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State) -> Result<()> {
+    match voice {
+        VoiceType::Channel {
+            group_id,
+            channel_id,
+        } => {
+            if let Some(mut group) = state.groups.get_mut(&group_id) {
+                let Some(channel) = group.channels.get_mut(&channel_id) else {
+                    anyhow::bail!("Channel not found");
+                };
+
+                if let ChannelType::Voice(users) = &mut channel.r#type {
+                    users.remove(&user.state.id);
+                }
+
+                let group = group.downgrade();
+
+                group.notify(
+                    Message {
+                        id: state.snowflake.generate(),
+                        from: group_id,
+                        to: user.state.id,
+                        data: Ack::ExitedVoice(channel_id),
+                        ..Default::default()
+                    },
+                    &state,
+                );
+            }
+        }
+        VoiceType::Direct(_) => todo!(),
+    }
+
+    Ok(())
 }

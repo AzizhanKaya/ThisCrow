@@ -17,7 +17,7 @@ impl Default for Config {
             api_url: "http://localhost:8080".to_string(),
             addr: "127.0.0.1:8081".to_string(),
             users_to_create: 1_000_000,
-            concurrency: 10_000,
+            concurrency: 1_000,
             local_ips,
         }
     }

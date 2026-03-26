@@ -30,7 +30,7 @@ pub struct State {
     pub friends: HashSet<id>,
     pub friend_requests: Vec<id>,
     pub friend_requests_sent: Vec<id>,
-    pub dms: Vec<id>,
+    pub dms: HashSet<id>,
     pub groups: Vec<id>,
     #[serde(skip)]
     pub activities: Vec<Activity>,
@@ -49,19 +49,41 @@ pub enum Status {
 
 #[derive(Clone, Debug)]
 pub enum Activity {
-    Game { name: String, time: DateTime<Utc> },
-    Music { name: String, time: DateTime<Utc> },
+    Game {
+        name: String,
+        time: DateTime<Utc>,
+    },
+    Music {
+        name: String,
+        time: DateTime<Utc>,
+    },
+    Watching {
+        name: String,
+        time: DateTime<Utc>,
+    },
+    Streaming {
+        group_id: id,
+        channel_id: id,
+        time: DateTime<Utc>,
+    },
 }
 
 #[derive(Clone, Debug)]
-pub enum Voice {
+pub struct Voice {
+    pub connection_id: usize,
+    pub r#type: VoiceType,
+}
+
+#[derive(Clone, Debug)]
+pub enum VoiceType {
     Direct(id),
-    Channel(id),
+    Channel { group_id: id, channel_id: id },
 }
 
 impl Session {
     pub fn next_version(&mut self) -> id {
-        self.state.version.add(1)
+        self.state.version += 1;
+        self.state.version
     }
 
     pub fn get_version(&self) -> id {
@@ -91,7 +113,7 @@ impl Session {
             .filter_map(|group_id| state.groups.get(group_id))
             .collect::<Vec<_>>();
 
-        let mut all_users: HashSet<id> = self
+        let all_users: HashSet<id> = self
             .state
             .friends
             .iter()
@@ -99,13 +121,10 @@ impl Session {
             .chain(self.state.friend_requests.iter())
             .chain(self.state.friend_requests_sent.iter())
             .chain(self.state.dms.iter())
+            .chain(std::iter::once(&self.state.id))
             .copied()
             .collect();
 
-        all_users.remove(&message.from);
-
-        self.send_message(message.clone());
-
-        dispatch::send_message_all(&state, message, all_users.into_iter().collect());
+        dispatch::send_message_all(&state, message, all_users.into_iter());
     }
 }
