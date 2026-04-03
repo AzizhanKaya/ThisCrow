@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE roles \n            SET name = COALESCE($2, name), \n            color = COALESCE($3, color),\n            permissions = COALESCE($4, permissions),\n            position = COALESCE($5, position)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e079ad3dcf33f15eaf5f171d8876d8fbbc8850e138813bd3d1705d70f197d594"
+}

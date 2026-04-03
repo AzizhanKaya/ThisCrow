@@ -1,78 +1,17 @@
-use crate::db::message::StoredMessage;
+use crate::db;
 use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::msgpack::MsgPack;
-use crate::state::group::Permissions;
 use crate::{State, middleware::JwtUser};
 use actix_web::cookie::Cookie;
 use actix_web::cookie::time::Duration as CookieDuration;
 use actix_web::{Error, HttpResponse, error, web};
-use chrono::{DateTime, Utc};
 use log::warn;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashSet;
 
 pub async fn me(user: web::ReqData<JwtUser>) -> Result<MsgPack<JwtUser>, Error> {
     Ok(MsgPack(user.into_inner()))
-}
-
-#[derive(Deserialize, Debug)]
-pub struct MessagesQuery {
-    user_id: id,
-    len: Option<i64>,
-    start: Option<DateTime<Utc>>,
-    end: DateTime<Utc>,
-}
-
-pub async fn get_messages(
-    state: State,
-    user: web::ReqData<JwtUser>,
-    query: web::Query<MessagesQuery>,
-) -> Result<MsgPack<Vec<StoredMessage>>, Error> {
-    let messages = state
-        .messages
-        .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
-        .map_err(|e| {
-            log::error!("Error while getting messages: {:?}", e);
-            error::ErrorInternalServerError("Error while getting messages")
-        })?;
-
-    Ok(MsgPack(messages))
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ChannelMessagesQuery {
-    group_id: id,
-    channel_id: id,
-    len: Option<i64>,
-    start: Option<DateTime<Utc>>,
-    end: DateTime<Utc>,
-}
-
-pub async fn get_channel_messages(
-    state: State,
-    user: web::ReqData<JwtUser>,
-    query: web::Query<ChannelMessagesQuery>,
-) -> Result<MsgPack<Vec<StoredMessage>>, Error> {
-    state
-        .groups
-        .get(&query.group_id)
-        .filter(|group| {
-            group
-                .compute_permissions(user.id, Some(query.channel_id))
-                .contains(Permissions::VIEW_MESSAGES)
-        })
-        .ok_or_else(|| error::ErrorUnauthorized("Don't have permissions to view this channel"))?;
-
-    let messages = state
-        .messages
-        .get_channel_messages(query.channel_id, query.start, query.end, query.len)
-        .map_err(|e| {
-            log::error!("Error while getting messages: {:?}", e);
-            error::ErrorInternalServerError("Error while getting messages")
-        })?;
-
-    Ok(MsgPack(messages))
 }
 
 pub async fn get_friends(
@@ -158,7 +97,6 @@ pub async fn log_out() -> Result<HttpResponse, Error> {
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/state")
-            .route("/messages", web::get().to(get_messages))
             .route("/friends", web::get().to(get_friends))
             .route("/friend_requests", web::get().to(get_friend_requets))
             .route("/dms", web::get().to(get_dms))

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            gu.group_id as \"id: id\"\n        FROM group_users gu\n        WHERE gu.user_id = $1\n        ORDER BY gu.position ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2bdc6d882679ca5a61139bdfcc1eb28e3046eba76aba497bcc13632ac10f8fc5"
+}

@@ -1,6 +1,5 @@
 use async_lock::{RwLock, RwLockReadGuardArc, RwLockWriteGuardArc};
 use parking_lot::Mutex;
-use std::backtrace::Backtrace;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;

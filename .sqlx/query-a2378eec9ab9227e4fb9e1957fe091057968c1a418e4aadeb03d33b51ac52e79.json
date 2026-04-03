@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                        UPDATE roles\n                        SET position = position + 1\n                        WHERE group_id = $1 AND id != $2 AND position >= $3 AND position < $4\n                        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a2378eec9ab9227e4fb9e1957fe091057968c1a418e4aadeb03d33b51ac52e79"
+}

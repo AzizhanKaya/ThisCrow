@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE groups \n        SET name = COALESCE($2, name), description = COALESCE($3, description), icon = COALESCE($4, icon)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c9b5d03f242f3301948c6af9b8662ab31d16ec18ea6bc1e23341ba01a6828410"
+}

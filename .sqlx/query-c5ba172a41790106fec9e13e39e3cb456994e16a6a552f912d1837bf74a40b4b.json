@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO channels (group_id, name, position, channel_type, title)\n        VALUES (\n            $1, \n            $2, \n            (SELECT COUNT(*) FROM channels WHERE group_id = $1) + 1, \n            $3,\n            $4\n        )\n        RETURNING id as \"id:id\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id:id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c5ba172a41790106fec9e13e39e3cb456994e16a6a552f912d1837bf74a40b4b"
+}

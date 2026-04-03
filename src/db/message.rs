@@ -1,7 +1,6 @@
 use crate::id::id;
-use crate::message::dispatch::Data;
 use crate::message::snowflake::snowflake_id;
-use crate::message::{Message, MessageType};
+use crate::message::{Data, Message, MessageType};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options};
@@ -112,6 +111,19 @@ impl MessageStore {
         Ok(())
     }
 
+    pub fn get(&self, message_id: snowflake_id) -> Result<StoredMessage> {
+        let cf_messages = self.db.cf_handle(CF_MESSAGES).unwrap();
+
+        let message_bytes = self.db.get_cf(&cf_messages, message_id.to_be_bytes())?;
+
+        if let Some(bytes) = message_bytes {
+            let message: StoredMessage = rmp_serde::from_slice(&bytes)?;
+            Ok(message)
+        } else {
+            anyhow::bail!("Message not found")
+        }
+    }
+
     fn index_dm_message(&self, message: &StoredMessage) -> Result<()> {
         let cf_dm = self.db.cf_handle(CF_DM_INDEX).unwrap();
         let cf_user_dms = self.db.cf_handle(CF_USER_DMS).unwrap();
@@ -209,6 +221,8 @@ impl MessageStore {
         prefix[4..8].copy_from_slice(&user2.to_be_bytes());
 
         let end_snowflake = Self::datetime_to_max_snowflake(&end);
+        let end_limit = Self::datetime_to_min_snowflake(&end);
+
         let start_snowflake = start
             .map(|s| Self::datetime_to_min_snowflake(&s))
             .unwrap_or(0);
@@ -234,6 +248,10 @@ impl MessageStore {
             if key.len() == 16 {
                 let message_id_bytes: [u8; 8] = key[8..16].try_into().unwrap();
                 let message_id_val = u64::from_be_bytes(message_id_bytes);
+
+                if message_id_val >= end_limit {
+                    continue;
+                }
 
                 if message_id_val < start_snowflake {
                     break;
@@ -347,7 +365,7 @@ impl MessageStore {
     pub fn overwrite(&self, message: StoredMessage) -> Result<()> {
         let cf_messages = self.db.cf_handle(CF_MESSAGES).unwrap();
 
-        let message_bytes = rmp_serde::to_vec(&message).expect("Failed to serialize message");
+        let message_bytes = rmp_serde::to_vec_named(&message).expect("Failed to serialize message");
 
         self.db
             .put_cf(&cf_messages, message.id.to_be_bytes(), &message_bytes)?;
@@ -388,7 +406,7 @@ impl MessageStore {
         Ok(())
     }
 
-    pub fn delete_dm(&self, from: id, to: id) -> Result<()> {
+    pub fn remove_dm(&self, from: id, to: id) -> Result<()> {
         let cf_user_dms = self.db.cf_handle(CF_USER_DMS).unwrap();
 
         let mut key = [0u8; 8];

@@ -92,10 +92,22 @@ pub struct Channel {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "lowercase", tag = "type", content = "users")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum ChannelType {
-    Voice(HashSet<id>),
+    Voice {
+        users: HashSet<id>,
+        watch_party: Option<WatchParty>,
+    },
     Text,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct WatchParty {
+    pub video: id,
+    pub host: id,
+    pub users: HashSet<id>,
+    pub offset: f64,
+    pub play: bool,
 }
 
 #[derive(Clone, Constructor)]
@@ -195,6 +207,18 @@ impl Group {
         });
     }
 
+    pub fn notify_without(&self, message: Message<Ack>, user_id: id, state: &State) {
+        let message = Bytes::from(msgpack!(message));
+        self.subscribers
+            .iter()
+            .filter(|&&uid| uid != user_id)
+            .for_each(|user_id| {
+                if let Some(user) = state.users.get(user_id) {
+                    user.send_bytes(message.clone());
+                }
+            });
+    }
+
     pub fn notify_all(&self, message: Message<Ack>, state: &State) {
         let message = Bytes::from(msgpack!(message));
         self.members.keys().for_each(|user_id| {
@@ -251,7 +275,10 @@ impl Group {
             title,
             position,
             r#type: if is_voice {
-                ChannelType::Voice(HashSet::new())
+                ChannelType::Voice {
+                    users: HashSet::new(),
+                    watch_party: None,
+                }
             } else {
                 ChannelType::Text
             },

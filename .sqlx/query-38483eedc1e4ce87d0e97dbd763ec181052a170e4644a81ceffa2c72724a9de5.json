@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO group_users (user_id, group_id, position)\n        VALUES (\n            $1, \n            $2, \n            (SELECT COALESCE(MAX(position), 0) + 1 FROM group_users WHERE user_id = $1)\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "38483eedc1e4ce87d0e97dbd763ec181052a170e4644a81ceffa2c72724a9de5"
+}

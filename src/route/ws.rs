@@ -75,7 +75,7 @@ static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
         .max_frame_size(Some(16384))
         .max_message_size(Some(16384))
         .write_buffer_size(1024)
-        .accept_unmasked_frames(false)
+        .accept_unmasked_frames(true)
 });
 
 async fn ws_handshake(stream: TcpStream, state: State) {
@@ -342,7 +342,7 @@ async fn send_with_timeout(
     match timeout(time, send_future).await {
         Ok(send_result) => {
             if let Err(e) = send_result {
-                anyhow::bail!("WebSocket send error: {e}");
+                anyhow::bail!("WebSocket send error: {e:?}");
             }
         }
         Err(_) => {
@@ -408,13 +408,24 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                     anyhow::bail!("Channel not found");
                 };
 
-                if let ChannelType::Voice(users) = &mut channel.r#type {
+                if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
                     users.remove(&user.state.id);
+
+                    if let Some(watch_party) = watch_party {
+                        watch_party.users.remove(&user.state.id);
+
+                        if watch_party.users.is_empty() {
+                            channel.r#type = ChannelType::Voice {
+                                users: HashSet::new(),
+                                watch_party: None,
+                            };
+                        }
+                    }
                 }
 
                 let group = group.downgrade();
 
-                group.notify(
+                group.notify_all(
                     Message {
                         id: state.snowflake.generate(),
                         from: group_id,
@@ -426,7 +437,18 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                 );
             }
         }
-        VoiceType::Direct(_) => todo!(),
+        VoiceType::Direct(other_user_id) => {
+            if let Some(other_user) = state.users.get(&other_user_id) {
+                let ack = Message {
+                    id: state.snowflake.generate(),
+                    to: other_user.state.id,
+                    data: Ack::ExitedVoice(user.state.id),
+                    ..Default::default()
+                };
+
+                other_user.send_message(ack);
+            }
+        }
     }
 
     Ok(())

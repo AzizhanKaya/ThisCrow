@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT * FROM users\n        WHERE username LIKE $1\n        LIMIT 10\n        ",
+  "query": "\n        SELECT *\n        FROM invitations\n        WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -10,61 +10,55 @@
       },
       {
         "ordinal": 1,
-        "name": "avatar",
+        "name": "code",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "username",
-        "type_info": "Text"
+        "name": "group_id",
+        "type_info": "Int4"
       },
       {
         "ordinal": 3,
-        "name": "name",
-        "type_info": "Text"
+        "name": "created_by",
+        "type_info": "Int4"
       },
       {
         "ordinal": 4,
-        "name": "email",
-        "type_info": "Text"
+        "name": "max_uses",
+        "type_info": "Int4"
       },
       {
         "ordinal": 5,
-        "name": "password_hash",
-        "type_info": "Text"
+        "name": "uses",
+        "type_info": "Int4"
       },
       {
         "ordinal": 6,
-        "name": "public_key",
-        "type_info": "Bytea"
+        "name": "expires_at",
+        "type_info": "Timestamptz"
       },
       {
         "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 8,
-        "name": "last_seen",
-        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Int4"
       ]
     },
     "nullable": [
       false,
+      false,
+      false,
+      false,
       true,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "dd2a55d1eeb49e4d498cb6afb1242fc8bf8bb05a14f2950868b0bae3f03a1630"
+  "hash": "d674b3c3888f6eb4fe00a10fe2cd7e517eb83b6c25e96e6f1b41fd3466d72504"
 }

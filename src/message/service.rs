@@ -14,6 +14,10 @@ impl MessageService {
         Self { store }
     }
 
+    pub fn get(&self, message_id: snowflake_id) -> Result<StoredMessage> {
+        self.store.get(message_id)
+    }
+
     pub fn save_message(&self, msg: StoredMessage) -> Result<()> {
         self.store.write(msg)
     }
@@ -26,8 +30,8 @@ impl MessageService {
         self.store.delete(message_id)
     }
 
-    pub fn delete_dm(&self, from: id, to: id) -> Result<()> {
-        self.store.delete_dm(from, to)
+    pub fn remove_dm(&self, from: id, to: id) -> Result<()> {
+        self.store.remove_dm(from, to)
     }
 
     pub fn get_channel_messages(

@@ -1,13 +1,14 @@
 use crate::db::{self};
 use crate::id::id;
 use crate::message::{Ack, MessageType};
-use crate::state::group::Permissions;
 use crate::state::group::{ChannelType, Group};
+use crate::state::group::{Permissions, WatchParty};
 use crate::state::user::{self, Voice, VoiceType};
 use crate::{State, message::Message};
 use anyhow::Result;
 use dashmap::Entry;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -90,7 +91,25 @@ pub enum Event {
     // ==== webRTC ====
     Offer(String),
     Answer(String),
-    IceCandidate(String),
+    IceCandidate {
+        candidate: Option<String>,
+        #[serde(rename = "sdpMid")]
+        sdp_mid: Option<String>,
+        #[serde(rename = "sdpMLineIndex")]
+        sdp_mline_index: Option<u16>,
+        #[serde(rename = "usernameFragment")]
+        username_fragment: Option<String>,
+    },
+
+    // ==== WATCH PARTY ====
+    JoinParty,
+    LeaveParty,
+    Watch(id),
+    UnWatch,
+    JumpTo {
+        offset: f64,
+        play: bool,
+    },
 }
 
 pub async fn handle_event(
@@ -320,9 +339,74 @@ pub async fn handle_event(
                     }
                 }
 
-                Event::Offer(_) | Event::Answer(_) | Event::IceCandidate(_) => {
+                Event::Offer(_) | Event::Answer(_) | Event::IceCandidate { .. } => {
                     if let Some(user) = state.users.get(&message.to) {
                         user.send_message(message);
+                    }
+                }
+
+                Event::JoinVoice => {
+                    if let Some(mut user) = state.users.get_mut(&message.from) {
+                        if user.state.voice.is_some() {
+                            anyhow::bail!("Already in a voice channel");
+                        }
+
+                        user.state.voice = Some(Voice {
+                            connection_id,
+                            r#type: VoiceType::Direct(message.to),
+                        });
+
+                        let ack = Message {
+                            id: message.id,
+                            to: message.from,
+                            data: Ack::JoinedVoice(message.to),
+                            ..Message::default()
+                        };
+
+                        user.send_message(ack);
+                    }
+
+                    if let Some(other_user) = state.users.get(&message.to) {
+                        let ack = Message {
+                            id: message.id,
+                            to: message.from,
+                            data: Ack::JoinedVoice(message.to),
+                            ..Message::default()
+                        };
+
+                        other_user.send_message(ack);
+                    }
+                }
+
+                Event::ExitVoice => {
+                    if let Some(mut user) = state.users.get_mut(&message.from) {
+                        if user.state.voice.is_none() {
+                            anyhow::bail!("Not in a voice channel");
+                        }
+
+                        user.state.voice = None;
+
+                        let user = user.downgrade();
+
+                        let ack = Message {
+                            id: message.id,
+                            to: message.from,
+                            data: Ack::ExitedVoice(message.to),
+                            ..Message::default()
+                        };
+
+                        user.send_message(ack);
+                    }
+
+                    if let Some(other_user) = state.users.get(&message.to) {
+                        let ack = Message {
+                            id: message.id,
+                            to: message.from,
+                            data: Ack::ExitedVoice(message.to),
+                            ..Message::default()
+                        };
+
+                        other_user.send_message(ack);
                     }
                 }
 
@@ -350,6 +434,8 @@ pub async fn handle_event(
                             }
 
                             group.subscribe(message.from);
+
+                            let group = group.downgrade();
 
                             let ack = Message {
                                 id: message.id,
@@ -427,6 +513,8 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
+                        let group = group.downgrade();
+
                         group.notify_all(ack, &state);
                     }
                 }
@@ -475,6 +563,8 @@ pub async fn handle_event(
                             },
                             ..Message::default()
                         };
+
+                        let group = group.downgrade();
 
                         group.notify(ack, &state);
                     }
@@ -525,6 +615,8 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
+                        let group = group.downgrade();
+
                         group.notify(ack, &state);
                     }
                 }
@@ -547,7 +639,7 @@ pub async fn handle_event(
                         };
 
                         match channel.r#type {
-                            ChannelType::Voice(ref mut users) => {
+                            ChannelType::Voice { ref mut users, .. } => {
                                 users.insert(message.from);
                             }
                             ChannelType::Text => {
@@ -592,7 +684,7 @@ pub async fn handle_event(
                         };
 
                         match channel.r#type {
-                            ChannelType::Voice(ref mut users) => {
+                            ChannelType::Voice { ref mut users, .. } => {
                                 users.remove(&message.from);
                             }
                             ChannelType::Text => {
@@ -625,7 +717,7 @@ pub async fn handle_event(
                         };
 
                         match channel.r#type {
-                            ChannelType::Voice(ref mut users) => {
+                            ChannelType::Voice { ref mut users, .. } => {
                                 users.insert(message.from);
                             }
                             ChannelType::Text => {
@@ -640,6 +732,8 @@ pub async fn handle_event(
                             data: Ack::MovedToVoice(channel_id),
                             ..Message::default()
                         };
+
+                        let group = group.downgrade();
 
                         group.notify(ack, &state);
                     }
@@ -692,6 +786,8 @@ pub async fn handle_event(
                             },
                             ..Message::default()
                         };
+
+                        let group = group.downgrade();
 
                         group.notify(ack, &state);
                     }
@@ -746,6 +842,8 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
+                        let group = group.downgrade();
+
                         group.notify(ack, &state);
                     }
                 }
@@ -774,6 +872,8 @@ pub async fn handle_event(
                             data: Ack::DeletedRole,
                             ..Message::default()
                         };
+
+                        let group = group.downgrade();
 
                         group.notify(ack, &state);
                     }
@@ -804,9 +904,201 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
+                        let group = group.downgrade();
+
                         group.notify(ack, &state);
                     }
                 }
+
+                Event::JoinParty => {
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let Some(channel) = group.channels.get_mut(&message.to) else {
+                            anyhow::bail!("Channel not found");
+                        };
+
+                        if let ChannelType::Voice { watch_party, .. } = &mut channel.r#type {
+                            let party = watch_party.get_or_insert_with(|| WatchParty {
+                                host: message.from,
+                                users: HashSet::from([message.from]),
+                                ..Default::default()
+                            });
+
+                            party.users.insert(message.from);
+                        }
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::JoinedParty(message.to),
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::LeaveParty => {
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let Some(channel) = group.channels.get_mut(&message.to) else {
+                            anyhow::bail!("Channel not found");
+                        };
+
+                        let ChannelType::Voice { watch_party, .. } = &mut channel.r#type else {
+                            anyhow::bail!("Channel is not a voice channel");
+                        };
+
+                        let Some(party) = watch_party.as_mut() else {
+                            anyhow::bail!("Party not found");
+                        };
+
+                        party.users.remove(&message.from);
+
+                        if party.users.is_empty() {
+                            *watch_party = None;
+                        } else if party.host == message.from {
+                            party.host = *party
+                                .users
+                                .iter()
+                                .min()
+                                .expect("Users list is guaranteed to be non-empty");
+                        }
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::LeftParty(message.to),
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::Watch(video_id) => {
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let Some(channel) = group.channels.get_mut(&message.to) else {
+                            anyhow::bail!("Channel not found");
+                        };
+
+                        let ChannelType::Voice {
+                            watch_party: Some(ref mut watch_party),
+                            ..
+                        } = channel.r#type
+                        else {
+                            anyhow::bail!("Party not found");
+                        };
+
+                        if watch_party.host != message.from {
+                            anyhow::bail!("You are not the host");
+                        }
+
+                        if video_id == id(0) || video_id == watch_party.video {
+                            anyhow::bail!("Invalid video id");
+                        }
+
+                        watch_party.video = video_id;
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::Watching(video_id),
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+
+                        group.notify_without(ack, message.from, &state);
+                    }
+                }
+
+                Event::UnWatch => {
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let Some(channel) = group.channels.get_mut(&message.to) else {
+                            anyhow::bail!("Channel not found");
+                        };
+
+                        let ChannelType::Voice {
+                            watch_party: Some(ref mut watch_party),
+                            ..
+                        } = channel.r#type
+                        else {
+                            anyhow::bail!("Party not found");
+                        };
+
+                        if watch_party.host != message.from {
+                            anyhow::bail!("You are not the host");
+                        }
+
+                        watch_party.video = id(0);
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::UnWatched,
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+
+                        group.notify_without(ack, message.from, &state);
+                    }
+                }
+
+                Event::JumpTo { offset, play } => {
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        let Some(channel) = group.channels.get_mut(&message.to) else {
+                            anyhow::bail!("Channel not found");
+                        };
+
+                        let ChannelType::Voice {
+                            watch_party: Some(ref mut watch_party),
+                            ..
+                        } = channel.r#type
+                        else {
+                            anyhow::bail!("Party not found");
+                        };
+
+                        if !watch_party.users.contains(&message.from) {
+                            anyhow::bail!("User is not in the party");
+                        }
+
+                        if watch_party.video == id(0) {
+                            anyhow::bail!("No video is being watched");
+                        }
+
+                        watch_party.offset = offset;
+                        watch_party.play = play;
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::JumpedTo { offset, play },
+                            ..Message::default()
+                        };
+
+                        group.notify_without(ack, message.from, &state);
+                    }
+                }
+
                 _ => anyhow::bail!("Invalid event"),
             }
         }

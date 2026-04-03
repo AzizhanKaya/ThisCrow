@@ -98,7 +98,10 @@ pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Gr
             .map(|row| {
                 let ch_id = id::from(row.id);
                 let c_type = if row.channel_type {
-                    ChannelType::Voice(HashSet::new())
+                    ChannelType::Voice {
+                        users: HashSet::new(),
+                        watch_party: None,
+                    }
                 } else {
                     ChannelType::Text
                 };

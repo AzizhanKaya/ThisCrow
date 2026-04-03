@@ -36,12 +36,19 @@ async fn ping() -> impl Responder {
 
 async fn db_connection() -> Result<PgPool, sqlx::Error> {
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    sqlx::postgres::PgPoolOptions::new()
+    let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(20)
         .min_connections(2)
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&database_url)
+        .await?;
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
         .await
+        .expect("Migration error");
+
+    Ok(pool)
 }
 
 pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
@@ -118,25 +125,21 @@ fn main() -> std::io::Result<()> {
                 .supports_credentials()
                 .max_age(3600);
 
-            App::new()
-                .wrap(cors)
-                .app_data(web::PayloadConfig::new(1024))
-                .app_data(state.clone())
-                .service(
-                    web::scope("/api")
-                        .configure(route::auth::configure)
-                        .service(ping)
-                        .service(
-                            web::scope("")
-                                .wrap(middleware::AuthMiddleware)
-                                //.wrap(Governor::new(&governor))
-                                .configure(route::upload::configure)
-                                .configure(route::state::configure)
-                                .configure(route::info::configure)
-                                .configure(route::message::configure)
-                                .configure(route::invitation::configure),
-                        ),
-                )
+            App::new().wrap(cors).app_data(state.clone()).service(
+                web::scope("/api")
+                    .configure(route::auth::configure)
+                    .service(ping)
+                    .service(
+                        web::scope("")
+                            .wrap(middleware::AuthMiddleware)
+                            //.wrap(Governor::new(&governor))
+                            .configure(route::upload::configure)
+                            .configure(route::state::configure)
+                            .configure(route::info::configure)
+                            .configure(route::message::configure)
+                            .configure(route::invitation::configure),
+                    ),
+            )
         })
         .bind("0.0.0.0:8080")?
         .run(),

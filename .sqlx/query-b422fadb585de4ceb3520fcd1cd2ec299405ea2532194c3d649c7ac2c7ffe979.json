@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO roles (group_id, name, color, permissions)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id as \"id:id\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id:id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b422fadb585de4ceb3520fcd1cd2ec299405ea2532194c3d649c7ac2c7ffe979"
+}

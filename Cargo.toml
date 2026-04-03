@@ -36,7 +36,7 @@ argon2 = "0.4"
 rand_core = "0.6"
 sha256 = "1.6.0"
 rand = "0.9.1"
-lettre = { version = "0.11", features = ["tokio1-native-tls"], optional = true }
+lettre = { version = "0.11", features = ["tokio1-rustls-tls"], optional = true }
 anyhow = "*"
 bytes = "1"
 rocksdb = "=0.24.0"
@@ -54,8 +54,3 @@ socket2 = "0.6.3"
 [features]
 default = []
 mail = ["lettre"]
-
-[profile.release]
-debug = true
-split-debuginfo = "off"
-strip = false

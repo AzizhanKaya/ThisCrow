@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM friend_requests\n        WHERE \"from\" = $1 AND \"to\" = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ca0475c787240d8b5b82bab609240489da4172025b4a4c1059d3457b977ef87e"
+}

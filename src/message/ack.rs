@@ -16,7 +16,7 @@ pub enum Ack {
     // Message
     Received(snowflake_id),
     Deleted(snowflake_id),
-    Overwritten(StoredMessage),
+    Overwritten(Box<StoredMessage>),
 
     // USER
     Initialized(Box<user::State>),
@@ -78,4 +78,15 @@ pub enum Ack {
     JoinedVoice(id),
     ExitedVoice(id),
     MovedToVoice(id),
+
+    // ==== WATCH PARTY ====
+    CreatedParty(id),
+    JoinedParty(id),
+    LeftParty(id),
+    Watching(id),
+    UnWatched,
+    JumpedTo {
+        offset: f64,
+        play: bool,
+    },
 }

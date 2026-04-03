@@ -3,66 +3,12 @@ use super::event;
 use crate::TOKIO_RT;
 use crate::db::message::StoredMessage;
 use crate::id::id;
-use crate::message::{Event, Message, MessageType};
+use crate::message::{Data, Event, Message, MessageType};
 use crate::state::group::Permissions;
 use crate::{State, msgpack};
 use anyhow::Result;
 use bytes::Bytes;
-use rmpv::Value;
-use serde::{Deserialize, Deserializer, Serialize, de};
-
-#[derive(Debug, Clone, Serialize)]
-#[serde_with::skip_serializing_none]
-pub struct MultiData {
-    text: Option<String>,
-    images: Option<Vec<String>>,
-    videos: Option<Vec<String>>,
-    files: Option<Vec<String>>,
-}
-
-impl<'de> Deserialize<'de> for MultiData {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize, Debug)]
-        struct Helper {
-            text: Option<String>,
-            images: Option<Vec<String>>,
-            videos: Option<Vec<String>>,
-            files: Option<Vec<String>>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-
-        if helper.text.is_none()
-            && helper.images.is_none()
-            && helper.videos.is_none()
-            && helper.files.is_none()
-        {
-            return Err(de::Error::custom("At least one field must be Some"));
-        }
-        Ok(MultiData {
-            text: helper.text,
-            images: helper.images,
-            videos: helper.videos,
-            files: helper.files,
-        })
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum Data {
-    Text(String),
-    Encrypted {
-        #[serde(with = "serde_bytes")]
-        nonce: Vec<u8>,
-        #[serde(with = "serde_bytes")]
-        cipher: Vec<u8>,
-    },
-    MultiData(MultiData),
-}
+use serde::Serialize;
 
 pub async fn handle_bytes(
     bytes: Bytes,
@@ -88,7 +34,6 @@ pub async fn handle_bytes(
 
         if let Some(mut user) = state.users.get_mut(&user_id) {
             user.state.dms.insert(message.to);
-            user.next_version();
 
             let message = Bytes::from(msgpack!(message));
 
@@ -118,8 +63,8 @@ pub async fn handle_bytes(
         TOKIO_RT.spawn(async move {
             let event_id = event.id;
 
-            if let Err(e) = event::handle_event(event, connection_id, &state).await {
-                log::warn!("Error while handling event: {:?}", e);
+            if let Err(e) = event::handle_event(event.clone(), connection_id, &state).await {
+                log::warn!("Error while handling event: {:?} {:?}", e, event);
 
                 if let Some(user) = state.users.get(&user_id) {
                     user.send_message(Message {
@@ -135,10 +80,12 @@ pub async fn handle_bytes(
         return Ok(());
     }
 
-    anyhow::bail!(
-        "Unkown message struct: {:?}",
-        rmp_serde::from_slice::<Message<Value>>(&bytes)
-    );
+    use rmpv::decode::read_value;
+
+    let mut slice = bytes.as_ref();
+    let value = read_value(&mut slice)?;
+
+    anyhow::bail!("Unkown message struct: {:?}", value);
 }
 
 fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) -> Result<()> {

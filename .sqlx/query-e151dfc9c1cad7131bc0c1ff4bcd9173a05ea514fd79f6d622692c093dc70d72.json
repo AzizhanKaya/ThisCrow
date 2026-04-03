@@ -6,7 +6,7 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Uuid"
+        "type_info": "Int4"
       },
       {
         "ordinal": 1,
@@ -35,7 +35,17 @@
       },
       {
         "ordinal": 6,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_seen",
         "type_info": "Timestamptz"
       }
     ],
@@ -51,7 +61,9 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      true
     ]
   },
   "hash": "e151dfc9c1cad7131bc0c1ff4bcd9173a05ea514fd79f6d622692c093dc70d72"

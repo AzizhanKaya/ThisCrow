@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT * FROM users\n        WHERE username LIKE $1\n        LIMIT 10\n        ",
+  "query": "\n        SELECT u.* FROM users u\n        WHERE u.id = ANY($1)\n        ",
   "describe": {
     "columns": [
       {
@@ -51,7 +51,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Int4Array"
       ]
     },
     "nullable": [
@@ -66,5 +66,5 @@
       true
     ]
   },
-  "hash": "dd2a55d1eeb49e4d498cb6afb1242fc8bf8bb05a14f2950868b0bae3f03a1630"
+  "hash": "851c515aebfbfa0414a5d6c3c289fe105efd679455675050fa318730676fb269"
 }

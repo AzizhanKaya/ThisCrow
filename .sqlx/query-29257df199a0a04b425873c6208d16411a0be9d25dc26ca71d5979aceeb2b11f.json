@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT gu.user_id, gu.name, gur.role_id AS \"role_id?\"\n            FROM group_users gu\n            LEFT JOIN group_user_roles gur \n            ON gu.group_id = gur.group_id AND gu.user_id = gur.user_id\n            WHERE gu.group_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role_id?",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "29257df199a0a04b425873c6208d16411a0be9d25dc26ca71d5979aceeb2b11f"
+}

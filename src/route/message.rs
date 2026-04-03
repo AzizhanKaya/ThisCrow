@@ -1,14 +1,88 @@
 use crate::id::id;
+use crate::message::{Data, snowflake::snowflake_id};
 use crate::state::group::Permissions;
 use crate::{State, db::message::StoredMessage, middleware::JwtUser, msgpack::MsgPack};
 use actix_web::error;
 use actix_web::{Error, error::ErrorInternalServerError, web};
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
+pub struct MessagesQuery {
+    user_id: id,
+    len: Option<i64>,
+    start: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+}
+
+pub async fn get_messages(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    query: web::Query<MessagesQuery>,
+) -> Result<MsgPack<Vec<StoredMessage>>, Error> {
+    let messages = state
+        .messages
+        .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
+        .map_err(|e| {
+            log::error!("Error while getting messages: {:?}", e);
+            error::ErrorInternalServerError("Error while getting messages")
+        })?;
+
+    Ok(MsgPack(messages))
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ChannelMessagesQuery {
+    group_id: id,
+    channel_id: id,
+    len: Option<i64>,
+    start: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+}
+
+pub async fn get_channel_messages(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    query: web::Query<ChannelMessagesQuery>,
+) -> Result<MsgPack<Vec<StoredMessage>>, Error> {
+    state
+        .groups
+        .get(&query.group_id)
+        .filter(|group| {
+            group
+                .compute_permissions(user.id, Some(query.channel_id))
+                .contains(Permissions::VIEW_MESSAGES)
+                || true
+        })
+        .ok_or_else(|| error::ErrorUnauthorized("Don't have permissions to view this channel"))?;
+
+    let messages = state
+        .messages
+        .get_channel_messages(query.channel_id, query.start, query.end, query.len)
+        .map_err(|e| {
+            log::error!("Error while getting messages: {:?}", e);
+            error::ErrorInternalServerError("Error while getting messages")
+        })?;
+
+    Ok(MsgPack(messages))
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Overwrite {
+    message_id: snowflake_id,
+    data: Data,
+}
 
 async fn overwrite_message(
     state: State,
     user: web::ReqData<JwtUser>,
-    MsgPack(mut message): MsgPack<StoredMessage>,
+    MsgPack(Overwrite { message_id, data }): MsgPack<Overwrite>,
 ) -> Result<(), Error> {
+    let mut message = state
+        .messages
+        .get(message_id)
+        .map_err(ErrorInternalServerError)?;
+
     message.overwrited = Some(());
 
     if message.from != user.id {
@@ -33,6 +107,8 @@ async fn overwrite_message(
         }
     }
 
+    message.data = data;
+
     state
         .messages
         .overwrite(message)
@@ -42,8 +118,13 @@ async fn overwrite_message(
 async fn delete_message(
     state: State,
     user: web::ReqData<JwtUser>,
-    MsgPack(message): MsgPack<StoredMessage>,
+    MsgPack(message_id): MsgPack<snowflake_id>,
 ) -> Result<(), Error> {
+    let message = state
+        .messages
+        .get(message_id)
+        .map_err(ErrorInternalServerError)?;
+
     let is_author = message.from == user.id;
 
     if let Some(group_id) = message.group_id {
@@ -74,22 +155,24 @@ async fn delete_message(
         .map_err(ErrorInternalServerError)
 }
 
-async fn delete_dm(
+async fn remove_dm(
     state: State,
     user: web::ReqData<JwtUser>,
     MsgPack(user_id): MsgPack<id>,
 ) -> Result<(), Error> {
     state
         .messages
-        .delete_dm(user.id, user_id)
+        .remove_dm(user.id, user_id)
         .map_err(ErrorInternalServerError)
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/message")
+            .route("/direct", web::get().to(get_messages))
+            .route("/channel", web::get().to(get_channel_messages))
             .route("/overwrite", web::post().to(overwrite_message))
             .route("/delete", web::post().to(delete_message))
-            .route("/delete_dm", web::post().to(delete_dm)),
+            .route("/remove_dm", web::post().to(remove_dm)),
     );
 }

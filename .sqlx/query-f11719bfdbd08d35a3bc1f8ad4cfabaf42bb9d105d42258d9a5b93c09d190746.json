@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT EXISTS(SELECT 1 FROM friends WHERE user_1 = $1 AND user_2 = $2)",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM friend_requests\n                WHERE \"from\" = $1 AND \"to\" = $2\n            )\n        ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "50aebfc0624fa29c365e74e2cc64de87327c2d03967aa28a8cf858a18431654b"
+  "hash": "f11719bfdbd08d35a3bc1f8ad4cfabaf42bb9d105d42258d9a5b93c09d190746"
 }
