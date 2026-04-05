@@ -9,6 +9,8 @@ services:
       DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/thiscrow"
       JWT_SECRET: ${JWT_SECRET}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
+      RUST_LOG: warn
+      DOMAIN: thiscrow.net
     ports:
       - "8080:8080"
       - "8081:8081"

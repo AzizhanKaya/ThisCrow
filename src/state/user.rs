@@ -54,12 +54,16 @@ pub enum Activity {
         time: DateTime<Utc>,
     },
     Music {
-        name: String,
-        time: DateTime<Utc>,
+        title: String,
+        artist: String,
+        album: String,
+        album_url: String,
+        length: u64,
+        offset: i64,
     },
     Watching {
-        name: String,
-        time: DateTime<Utc>,
+        video: id,
+        offset: i64,
     },
     Streaming {
         group_id: id,

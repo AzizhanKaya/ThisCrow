@@ -107,7 +107,7 @@ pub enum Event {
     Watch(id),
     UnWatch,
     JumpTo {
-        offset: f64,
+        offset: i64,
         play: bool,
     },
 }

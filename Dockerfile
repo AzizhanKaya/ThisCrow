@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /app/ThisCrow /usr/local/bin/ThisCrow
 
-ENV RUST_LOG=warn
+
 WORKDIR /
 ENTRYPOINT ["ThisCrow"]
 EXPOSE 8080

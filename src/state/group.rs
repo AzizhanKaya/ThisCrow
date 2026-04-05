@@ -106,7 +106,7 @@ pub struct WatchParty {
     pub video: id,
     pub host: id,
     pub users: HashSet<id>,
-    pub offset: f64,
+    pub offset: i64,
     pub play: bool,
 }
 
