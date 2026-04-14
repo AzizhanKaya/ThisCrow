@@ -3,8 +3,10 @@ use crate::TOKIO_RT;
 use crate::db;
 use crate::id::id;
 use crate::message::Ack;
+use crate::message::Event;
 use crate::message::Message;
 use crate::message::dispatch;
+use crate::message::event;
 use crate::middleware;
 use crate::msgpack;
 use crate::state::group::ChannelType;
@@ -15,6 +17,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use dashmap::Entry;
 use flume::Receiver;
+use flume::Sender;
 use flume::unbounded;
 use log::warn;
 use monoio::io::sink::Sink;
@@ -176,16 +179,27 @@ async fn initialize_session(
         data: Ack::Initialized(Box::new(user_state.clone())),
         ..Default::default()
     };
-    let connection_id = 1;
-    let (tx, rx) = unbounded::<Bytes>();
 
-    let _ = tx.send(Bytes::from(msgpack!(session_initialized)));
+    let connection_id = 1;
+
+    let (message_tx, message_rx) = unbounded::<Bytes>();
+    let (event_tx, event_rx) = unbounded::<Message<Event>>();
+
+    TOKIO_RT.spawn(handle_events(
+        event_rx,
+        user_id,
+        connection_id,
+        state.clone(),
+    ));
+
+    let _ = message_tx.send(Bytes::from(msgpack!(session_initialized)));
 
     let user_session = user::Session {
         connections: vec![user::Connection {
             id: connection_id,
-            writer: tx,
+            writer: message_tx,
         }],
+        event_tx: event_tx.clone(),
         state: user_state,
     };
 
@@ -193,7 +207,8 @@ async fn initialize_session(
 
     monoio::spawn(handle_connection(
         stream,
-        rx,
+        message_rx,
+        event_tx,
         user_id,
         connection_id,
         state.clone(),
@@ -210,7 +225,7 @@ async fn add_connection(
     let user_id = user.state.id;
     let connection_id = user.connections.iter().map(|c| c.id).max().unwrap_or(0) + 1;
 
-    let (tx, rx) = unbounded::<Bytes>();
+    let (message_tx, message_rx) = unbounded::<Bytes>();
 
     let session_initialized = Message {
         to: user_id,
@@ -218,16 +233,17 @@ async fn add_connection(
         ..Default::default()
     };
 
-    let _ = tx.send(Bytes::from(msgpack!(session_initialized)));
+    let _ = message_tx.send(Bytes::from(msgpack!(session_initialized)));
 
     user.connections.push(user::Connection {
         id: connection_id,
-        writer: tx,
+        writer: message_tx,
     });
 
     monoio::spawn(handle_connection(
         stream,
-        rx,
+        message_rx,
+        user.event_tx.clone(),
         user_id,
         connection_id,
         state.clone(),
@@ -236,18 +252,19 @@ async fn add_connection(
 
 async fn handle_connection(
     mut stream: WebSocket<TcpStream>,
-    rx: Receiver<Bytes>,
+    message_rx: Receiver<Bytes>,
+    event_tx: Sender<Message<Event>>,
     user_id: id,
     connection_id: usize,
     state: State,
 ) {
     loop {
-        if rx.len() > 100 {
+        if message_rx.len() > 100 {
             log::warn!("Message queue full (>100) for {user_id}, disconnecting.");
             break;
         }
 
-        while let Ok(message) = rx.try_recv() {
+        while let Ok(message) = message_rx.try_recv() {
             if let Err(e) = send_with_timeout(message, Duration::from_secs(5), &mut stream).await {
                 log::warn!("Failed to send message to {user_id}: {e:?}");
                 break;
@@ -260,7 +277,7 @@ async fn handle_connection(
             incoming = stream.next() => {
                  match incoming {
                     Some(Ok(message)) => {
-                        if !handle_incoming(message, &mut stream, user_id, connection_id, &state).await {
+                        if !handle_incoming(message, &mut stream, &event_tx, user_id, connection_id, &state).await {
                             break;
                         }
                     }
@@ -275,7 +292,7 @@ async fn handle_connection(
                 };
             },
 
-            outgoing = rx.recv_async() => {
+            outgoing = message_rx.recv_async() => {
                 match outgoing {
                     Ok(outgoing) => {
                         if !handle_outgoing(outgoing, &mut stream, user_id).await {
@@ -296,13 +313,16 @@ async fn handle_connection(
 async fn handle_incoming(
     message: WsMessage,
     stream: &mut WebSocket<TcpStream>,
+    event_tx: &Sender<Message<Event>>,
     user_id: id,
     connection_id: usize,
     state: &State,
 ) -> bool {
     match message {
         WsMessage::Binary(bytes) => {
-            if let Err(e) = dispatch::handle_bytes(bytes, user_id, connection_id, state).await {
+            if let Err(e) =
+                dispatch::handle_bytes(bytes, user_id, connection_id, event_tx, state).await
+            {
                 log::warn!("Message error for user: {e:?}");
             }
         }
@@ -353,6 +373,27 @@ async fn send_with_timeout(
     Ok(())
 }
 
+async fn handle_events(
+    event_rx: Receiver<Message<Event>>,
+    user_id: id,
+    connection_id: usize,
+    state: State,
+) {
+    while let Ok(event) = event_rx.recv_async().await {
+        if let Err(e) = event::handle_event(event.clone(), connection_id, &state).await {
+            log::warn!("Error while handling event: {:?} {:?}", e, event);
+
+            if let Some(user) = state.users.get(&user_id) {
+                user.send_message(Message {
+                    id: event.id,
+                    from: user_id,
+                    data: Ack::Error(e.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+}
 async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<()> {
     let _user_lock = state.user_locks.write(user_id).await;
     let mut update_last_seen = false;

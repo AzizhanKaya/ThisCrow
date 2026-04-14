@@ -1,4 +1,3 @@
-use crate::db;
 use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::msgpack::MsgPack;

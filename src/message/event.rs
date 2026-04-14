@@ -21,6 +21,10 @@ pub enum Event {
     },
     ChangeStatus(user::Status),
 
+    /* ===== ACTIVITY ===== */
+    Music(MusicEvent),
+    Game(GameEvent),
+
     /* ===== FRIEND ===== */
     FriendRequest,
     FriendAccept,
@@ -112,13 +116,29 @@ pub enum Event {
     },
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+#[serde(tag = "music", content = "payload")]
+pub enum MusicEvent {
+    Playing(user::Music),
+    Seek(i64),
+    Paused,
+    Stopped,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+#[serde(tag = "game", content = "payload")]
+pub enum GameEvent {
+    Playing(user::Game),
+    Stopped,
+}
+
 pub async fn handle_event(
     message: Message<Event>,
     connection_id: usize,
     state: &State,
 ) -> Result<()> {
-    let _user_lock = state.user_locks.write(message.from).await;
-
     match message.r#type {
         MessageType::Info => {
             match message.data {
@@ -154,6 +174,94 @@ pub async fn handle_event(
                             id: message.id,
                             from: message.from,
                             data: Ack::ChangedStatus(change_status),
+                            ..Message::default()
+                        };
+
+                        let user = user.downgrade();
+
+                        user.send_message_all(ack, &state);
+                    }
+                }
+
+                /* ===== ACTIVITY ===== */
+                Event::Music(music_event) => {
+                    if let Some(mut user) = state.users.get_mut(&message.from) {
+                        let music_activity = user
+                            .state
+                            .activities
+                            .iter_mut()
+                            .find(|a| matches!(a, user::Activity::Music(_)));
+
+                        match &music_event {
+                            MusicEvent::Playing(music) => {
+                                let mut music = music.clone();
+                                music.paused = false;
+                                if let Some(user::Activity::Music(m)) = music_activity {
+                                    *m = music;
+                                } else {
+                                    user.state.activities.push(user::Activity::Music(music));
+                                }
+                            }
+                            MusicEvent::Seek(offset) => {
+                                if let Some(user::Activity::Music(music)) = music_activity {
+                                    music.offset = *offset;
+                                }
+                            }
+                            MusicEvent::Paused => {
+                                if let Some(user::Activity::Music(music)) = music_activity {
+                                    music.paused = true;
+                                }
+                            }
+                            MusicEvent::Stopped => {
+                                user.state
+                                    .activities
+                                    .retain(|a| !matches!(a, user::Activity::Music(_)));
+                            }
+                        }
+
+                        let ack = Message {
+                            id: message.id,
+                            from: message.from,
+                            data: Ack::MusicActivity(music_event),
+                            ..Message::default()
+                        };
+
+                        println!("{:?}", user.state.activities);
+
+                        let user = user.downgrade();
+
+                        user.send_message_all(ack, &state);
+                    }
+                }
+
+                Event::Game(game_event) => {
+                    if let Some(mut user) = state.users.get_mut(&message.from) {
+                        let game_activity = user
+                            .state
+                            .activities
+                            .iter_mut()
+                            .find(|a| matches!(a, user::Activity::Game(_)));
+
+                        match &game_event {
+                            GameEvent::Playing(game) => {
+                                let game = game.clone();
+                                if let Some(user::Activity::Game(g)) = game_activity {
+                                    *g = game;
+                                } else {
+                                    user.state.activities.push(user::Activity::Game(game));
+                                }
+                            }
+                            GameEvent::Stopped => {
+                                user.state
+                                    .activities
+                                    .retain(|a| !matches!(a, user::Activity::Game(_)));
+                            }
+                        }
+
+                        let ack = Message {
+                            id: message.id,
+                            from: message.from,
+                            data: Ack::GameActivity(game_event),
                             ..Message::default()
                         };
 
@@ -901,6 +1009,37 @@ pub async fn handle_event(
                             from: group_id,
                             to: user,
                             data: Ack::AssignedRole { role_id: role },
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::RemoveRole { user, role } => {
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, None);
+                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                            anyhow::bail!("Unauthorized to remove role");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::remove_role(&state.pool, user, role, group_id).await?;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.remove_role(user, role);
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: user,
+                            data: Ack::RemovedRole { role_id: role },
                             ..Message::default()
                         };
 

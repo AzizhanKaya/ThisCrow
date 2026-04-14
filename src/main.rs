@@ -115,7 +115,13 @@ fn main() -> std::io::Result<()> {
     TOKIO_RT.block_on(
         HttpServer::new(move || {
             let cors = Cors::default()
-                .allowed_origin("http://localhost:5173")
+                .allowed_origin_fn(|origin, _req_head| {
+                    let origin_str = origin.to_str().unwrap_or("");
+                    origin_str == "http://localhost:5173"
+                        || origin_str == "tauri://localhost"
+                        || origin_str == "http://tauri.localhost"
+                        || origin_str.contains("thiscrow.net")
+                })
                 .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
                 .allowed_headers(vec![
                     actix_web::http::header::AUTHORIZATION,

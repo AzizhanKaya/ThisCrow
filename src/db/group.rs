@@ -477,6 +477,26 @@ pub async fn assign_role(
     Ok(())
 }
 
+pub async fn remove_role(
+    pool: &Pool<Postgres>,
+    user_id: id,
+    role_id: id,
+    group_id: id,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        DELETE FROM group_user_roles WHERE user_id = $1 AND role_id = $2 AND group_id = $3
+        "#,
+        *user_id,
+        *role_id,
+        *group_id,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 /* ===== MEMBER ===== */
 
 pub async fn add_member(

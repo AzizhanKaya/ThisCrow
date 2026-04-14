@@ -1,10 +1,9 @@
 use crate::{
     id::id,
-    message::{Message, dispatch},
+    message::{Event, Message, dispatch},
     msgpack,
 };
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use flume::Sender;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -12,6 +11,7 @@ use std::collections::HashSet;
 pub struct Session {
     pub state: State,
     pub connections: Vec<Connection>,
+    pub event_tx: Sender<Message<Event>>,
 }
 
 pub struct Connection {
@@ -32,9 +32,7 @@ pub struct State {
     pub friend_requests_sent: Vec<id>,
     pub dms: HashSet<id>,
     pub groups: Vec<id>,
-    #[serde(skip)]
     pub activities: Vec<Activity>,
-    #[serde(skip)]
     pub voice: Option<Voice>,
 }
 
@@ -47,20 +45,11 @@ pub enum Status {
     Offline,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Activity {
-    Game {
-        name: String,
-        time: DateTime<Utc>,
-    },
-    Music {
-        title: String,
-        artist: String,
-        album: String,
-        album_url: String,
-        length: u64,
-        offset: i64,
-    },
+    Game(Game),
+    Music(Music),
     Watching {
         video: id,
         offset: i64,
@@ -68,17 +57,35 @@ pub enum Activity {
     Streaming {
         group_id: id,
         channel_id: id,
-        time: DateTime<Utc>,
+        time: i64,
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Music {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_url: String,
+    pub length: u64,
+    pub offset: i64,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Game {
+    pub app_id: u64,
+    pub start_time: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Voice {
     pub connection_id: usize,
     pub r#type: VoiceType,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum VoiceType {
     Direct(id),
     Channel { group_id: id, channel_id: id },

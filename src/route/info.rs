@@ -1,7 +1,7 @@
 use crate::id::id;
 use crate::msgpack::MsgPack;
 use crate::state;
-use crate::state::user::Status;
+use crate::state::user::{Activity, Status};
 use crate::{State, db, state::user};
 use actix_web::error::ErrorInternalServerError;
 use actix_web::{Error, error, web};
@@ -39,6 +39,7 @@ struct UserInfo {
     status: Status,
     friends: Vec<id>,
     groups: Vec<id>,
+    activities: Vec<Activity>,
 }
 
 impl From<state::user::State> for UserInfo {
@@ -52,6 +53,7 @@ impl From<state::user::State> for UserInfo {
             status: value.status,
             friends: value.friends.into_iter().collect(),
             groups: value.groups,
+            activities: value.activities,
         }
     }
 }
@@ -93,6 +95,7 @@ async fn get_user(state: State, user_id: web::Path<id>) -> Result<MsgPack<UserIn
         status: Status::Offline,
         friends,
         groups,
+        activities: Vec::new(),
     }))
 }
 

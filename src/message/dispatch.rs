@@ -1,6 +1,4 @@
 use super::ack::Ack;
-use super::event;
-use crate::TOKIO_RT;
 use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::{Data, Event, Message, MessageType};
@@ -8,12 +6,14 @@ use crate::state::group::Permissions;
 use crate::{State, msgpack};
 use anyhow::Result;
 use bytes::Bytes;
+use flume::Sender;
 use serde::Serialize;
 
 pub async fn handle_bytes(
     bytes: Bytes,
     user_id: id,
     connection_id: usize,
+    event_tx: &Sender<Message<Event>>,
     state: &State,
 ) -> Result<()> {
     if let Ok(mut message) = rmp_serde::from_slice::<Message<Data>>(&bytes) {
@@ -51,33 +51,21 @@ pub async fn handle_bytes(
         return Ok(());
     }
 
-    if let Ok(mut event) = rmp_serde::from_slice::<Message<Event>>(&bytes) {
-        event.from = user_id;
+    match rmp_serde::from_slice::<Message<Event>>(&bytes) {
+        Ok(mut event) => {
+            event.from = user_id;
 
-        if *user_id != (*event.id >> 32) as i32 {
-            anyhow::bail!("Invalid event id");
-        }
-
-        let state = state.clone();
-
-        TOKIO_RT.spawn(async move {
-            let event_id = event.id;
-
-            if let Err(e) = event::handle_event(event.clone(), connection_id, &state).await {
-                log::warn!("Error while handling event: {:?} {:?}", e, event);
-
-                if let Some(user) = state.users.get(&user_id) {
-                    user.send_message(Message {
-                        id: event_id,
-                        from: user_id,
-                        data: Ack::Error(e.to_string()),
-                        ..Default::default()
-                    });
-                }
+            if *user_id != (*event.id >> 32) as i32 {
+                anyhow::bail!("Invalid event id");
             }
-        });
 
-        return Ok(());
+            event_tx.send(event)?;
+
+            return Ok(());
+        }
+        Err(e) => {
+            log::warn!("Event deserialization error: {:?}", e);
+        }
     }
 
     use rmpv::decode::read_value;

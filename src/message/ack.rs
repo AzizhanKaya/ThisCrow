@@ -1,5 +1,6 @@
 use crate::db::message::StoredMessage;
 use crate::id::id;
+use crate::message::event;
 use crate::message::snowflake::snowflake_id;
 use crate::state::group::Group;
 use crate::state::user;
@@ -21,6 +22,8 @@ pub enum Ack {
     // USER
     Initialized(Box<user::State>),
     ChangedStatus(user::Status),
+    MusicActivity(event::MusicEvent),
+    GameActivity(event::GameEvent),
     AddedFriend,
     ReceivedFriendRequest,
     SentFriendRequest,
@@ -47,6 +50,9 @@ pub enum Ack {
         title: Option<String>,
     },
     AssignedRole {
+        role_id: id,
+    },
+    RemovedRole {
         role_id: id,
     },
     CreatedRole {

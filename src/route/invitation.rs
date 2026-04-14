@@ -153,6 +153,34 @@ async fn delete_invitation(
     Ok(HttpResponse::Ok().finish())
 }
 
+async fn list_invitations(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    MsgPack(group_id): MsgPack<id>,
+) -> Result<MsgPack<Vec<Invitation>>, Error> {
+    if let Some(group) = state.groups.get(&group_id) {
+        if !group
+            .compute_permissions(user.id, None)
+            .intersects(Permissions::MANAGE_GROUP | Permissions::ADMINISTRATOR)
+        {
+            return Err(error::ErrorForbidden(
+                "You don't have permission to list invitations",
+            ));
+        }
+    } else {
+        return Err(error::ErrorNotFound("Group not found"));
+    }
+
+    let invitations = db::group::get_group_invitations(&state.pool, group_id)
+        .await
+        .map_err(|e| {
+            log::error!("Error list_invitations: {}", e);
+            error::ErrorInternalServerError("Error list_invitations")
+        })?;
+
+    Ok(MsgPack(invitations))
+}
+
 use serde::Serialize;
 
 #[derive(Deserialize)]
@@ -223,6 +251,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/create", web::post().to(create_invitation))
             .route("/join", web::post().to(join_invitation))
             .route("/delete", web::post().to(delete_invitation))
+            .route("/list", web::post().to(list_invitations))
             .route("/info", web::get().to(invitation_info)),
     );
 }
