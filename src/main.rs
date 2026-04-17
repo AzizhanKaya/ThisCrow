@@ -10,11 +10,11 @@ use actix_governor::GovernorConfigBuilder;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dashmap::DashMap;
 use dotenv::dotenv;
+use nohash_hasher::BuildNoHashHasher;
 use once_cell::sync::Lazy;
 use sqlx::PgPool;
 use state::app::AppState;
 use std::env;
-use tokio::runtime::{Builder, Runtime};
 
 pub type State = web::Data<AppState>;
 
@@ -51,26 +51,19 @@ async fn db_connection() -> Result<PgPool, sqlx::Error> {
     Ok(pool)
 }
 
-pub static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
-    Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()
-        .expect("Tokio runtime error")
-});
-
 pub static DOMAIN: Lazy<String> = Lazy::new(|| env::var("DOMAIN").expect("DOMAIN must be set"));
 
-fn main() -> std::io::Result<()> {
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv().ok();
 
     route::upload::init();
     #[cfg(feature = "mail")]
-    TOKIO_RT.spawn(route::auth::clear_otp_schedular());
+    tokio::spawn(route::auth::clear_otp_schedular());
 
-    let pool = TOKIO_RT
-        .block_on(db_connection())
+    let pool = db_connection()
+        .await
         .expect("Failed to connect to database");
 
     let message_store = db::message::MessageStore::open("data/messages")
@@ -78,11 +71,11 @@ fn main() -> std::io::Result<()> {
 
     let messages = MessageService::new(message_store);
 
-    let hasher = ahash::RandomState::new();
+    let hasher = BuildNoHashHasher::<id::id>::default();
 
     let state = web::Data::new(AppState {
         users: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
-        groups: DashMap::with_hasher_and_shard_amount(hasher, 8),
+        groups: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         user_locks: LockMap::new(),
         group_locks: LockMap::new(),
         pool,
@@ -90,20 +83,13 @@ fn main() -> std::io::Result<()> {
         messages,
     });
 
-    for _ in 0..6 {
-        let state = state.clone();
-
-        std::thread::spawn(move || {
-            let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
-                .enable_all()
-                .build()
-                .expect("Monoio runtime error");
-
-            log::info!("Monoio WebSocket server listening on {}", 8081);
-
-            rt.block_on(route::ws::listen(8081, state));
-        });
-    }
+    let state_ws = state.clone();
+    tokio::spawn(async move {
+        log::info!("WebSocket server listening on {}", 8081);
+        if let Err(e) = route::ws::listen(8081, state_ws).await {
+            log::error!("WebSocket server error: {:?}", e);
+        }
+    });
 
     let _governor = GovernorConfigBuilder::default()
         .seconds_per_request(10)
@@ -112,42 +98,35 @@ fn main() -> std::io::Result<()> {
         .finish()
         .unwrap();
 
-    TOKIO_RT.block_on(
-        HttpServer::new(move || {
-            let cors = Cors::default()
-                .allowed_origin_fn(|origin, _req_head| {
-                    let origin_str = origin.to_str().unwrap_or("");
-                    origin_str == "http://localhost:5173"
-                        || origin_str == "tauri://localhost"
-                        || origin_str == "http://tauri.localhost"
-                        || origin_str.contains("thiscrow.net")
-                })
-                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
-                .allowed_headers(vec![
-                    actix_web::http::header::AUTHORIZATION,
-                    actix_web::http::header::ACCEPT,
-                    actix_web::http::header::CONTENT_TYPE,
-                ])
-                .supports_credentials()
-                .max_age(3600);
+    HttpServer::new(move || {
+        let cors = Cors::default()
+            .allowed_origin_fn(|_origin, _req_head| true)
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+            .allowed_headers(vec![
+                actix_web::http::header::AUTHORIZATION,
+                actix_web::http::header::ACCEPT,
+                actix_web::http::header::CONTENT_TYPE,
+            ])
+            .supports_credentials()
+            .max_age(3600);
 
-            App::new().wrap(cors).app_data(state.clone()).service(
-                web::scope("/api")
-                    .configure(route::auth::configure)
-                    .service(ping)
-                    .service(
-                        web::scope("")
-                            .wrap(middleware::AuthMiddleware)
-                            //.wrap(Governor::new(&governor))
-                            .configure(route::upload::configure)
-                            .configure(route::state::configure)
-                            .configure(route::info::configure)
-                            .configure(route::message::configure)
-                            .configure(route::invitation::configure),
-                    ),
-            )
-        })
-        .bind("0.0.0.0:8080")?
-        .run(),
-    )
+        App::new().wrap(cors).app_data(state.clone()).service(
+            web::scope("/api")
+                .configure(route::auth::configure)
+                .service(ping)
+                .service(
+                    web::scope("")
+                        .wrap(middleware::AuthMiddleware)
+                        //.wrap(Governor::new(&governor))
+                        .configure(route::upload::configure)
+                        .configure(route::state::configure)
+                        .configure(route::info::configure)
+                        .configure(route::message::configure)
+                        .configure(route::invitation::configure),
+                ),
+        )
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
 }

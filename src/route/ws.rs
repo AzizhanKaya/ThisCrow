@@ -1,5 +1,5 @@
 use crate::State;
-use crate::TOKIO_RT;
+
 use crate::db;
 use crate::id::id;
 use crate::message::Ack;
@@ -19,22 +19,20 @@ use dashmap::Entry;
 use flume::Receiver;
 use flume::Sender;
 use flume::unbounded;
+use futures_util::{SinkExt, StreamExt};
 use log::warn;
-use monoio::io::sink::Sink;
-use monoio::io::stream::Stream;
-use monoio::net::{TcpListener, TcpStream};
-use monoio::time::Duration;
-use monoio::time::timeout;
-use monoio_tungstenite::Message as WsMessage;
-use monoio_tungstenite::WebSocket;
-use monoio_tungstenite::error::Error as WsError;
-use monoio_tungstenite::protocol::WebSocketConfig;
 use once_cell::sync::Lazy;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Duration;
+use tokio_tungstenite::WebSocketStream;
+use tungstenite::Message as WsMessage;
+use tungstenite::error::Error as WsError;
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http;
+use tungstenite::protocol::WebSocketConfig;
 
 pub async fn listen(port: u16, state: State) -> Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
@@ -59,10 +57,10 @@ pub async fn listen(port: u16, state: State) -> Result<()> {
         match listener.accept().await {
             Ok((stream, _)) => {
                 if let Err(e) = stream.set_nodelay(true) {
-                    log::warn!("Nodelay ayarlanamadı: {}", e);
+                    log::warn!("Nodelay error: {}", e);
                 }
                 let state = state.clone();
-                monoio::spawn(async move {
+                tokio::spawn(async move {
                     ws_handshake(stream, state).await;
                 });
             }
@@ -75,8 +73,8 @@ pub async fn listen(port: u16, state: State) -> Result<()> {
 
 static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
     WebSocketConfig::default()
-        .max_frame_size(Some(16384))
-        .max_message_size(Some(16384))
+        .max_frame_size(Some(16 * 1024))
+        .max_message_size(Some(64 * 1024))
         .write_buffer_size(1024)
         .accept_unmasked_frames(true)
 });
@@ -84,7 +82,7 @@ static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
 async fn ws_handshake(stream: TcpStream, state: State) {
     let mut user_id: id = Default::default();
 
-    let callback = |req: &Request, response: Response| -> Result<Response, Box<ErrorResponse>> {
+    let callback = |req: &Request, response: Response| -> Result<Response, ErrorResponse> {
         let user = req
             .headers()
             .get(http::header::COOKIE)
@@ -107,10 +105,11 @@ async fn ws_handshake(stream: TcpStream, state: State) {
             .body(Some("Unauthorized".to_string()))
             .unwrap();
 
-        Err(Box::new(reject))
+        Err(reject)
     };
 
-    match monoio_tungstenite::accept_hdr_with_config(stream, callback, Some(*WS_CONFIG)).await {
+    match tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(*WS_CONFIG)).await
+    {
         Ok(stream) => {
             initialize_session(stream, user_id, state).await;
         }
@@ -121,7 +120,7 @@ async fn ws_handshake(stream: TcpStream, state: State) {
 }
 
 async fn initialize_session(
-    stream: WebSocket<TcpStream>,
+    stream: WebSocketStream<TcpStream>,
     user_id: id,
     state: State,
 ) -> anyhow::Result<()> {
@@ -134,7 +133,7 @@ async fn initialize_session(
 
     let pool = state.pool.clone();
 
-    let db_tasks = TOKIO_RT.spawn(async move {
+    let db_tasks = tokio::spawn(async move {
         tokio::join!(
             db::user::get_user(&pool, user_id),
             db::user::get_groups(&pool, user_id),
@@ -185,7 +184,7 @@ async fn initialize_session(
     let (message_tx, message_rx) = unbounded::<Bytes>();
     let (event_tx, event_rx) = unbounded::<Message<Event>>();
 
-    TOKIO_RT.spawn(handle_events(
+    tokio::spawn(handle_events(
         event_rx,
         user_id,
         connection_id,
@@ -205,7 +204,7 @@ async fn initialize_session(
 
     state.users.insert(user_id, user_session);
 
-    monoio::spawn(handle_connection(
+    tokio::spawn(handle_connection(
         stream,
         message_rx,
         event_tx,
@@ -218,7 +217,7 @@ async fn initialize_session(
 }
 
 async fn add_connection(
-    stream: monoio_tungstenite::WebSocket<TcpStream>,
+    stream: WebSocketStream<TcpStream>,
     user: &mut user::Session,
     state: &State,
 ) {
@@ -240,7 +239,7 @@ async fn add_connection(
         writer: message_tx,
     });
 
-    monoio::spawn(handle_connection(
+    tokio::spawn(handle_connection(
         stream,
         message_rx,
         user.event_tx.clone(),
@@ -251,7 +250,7 @@ async fn add_connection(
 }
 
 async fn handle_connection(
-    mut stream: WebSocket<TcpStream>,
+    mut stream: WebSocketStream<TcpStream>,
     message_rx: Receiver<Bytes>,
     event_tx: Sender<Message<Event>>,
     user_id: id,
@@ -271,9 +270,9 @@ async fn handle_connection(
             }
         }
 
-        stream.flush().await;
+        let _ = stream.flush().await;
 
-        monoio::select! {
+        tokio::select! {
             incoming = stream.next() => {
                  match incoming {
                     Some(Ok(message)) => {
@@ -312,7 +311,7 @@ async fn handle_connection(
 #[inline]
 async fn handle_incoming(
     message: WsMessage,
-    stream: &mut WebSocket<TcpStream>,
+    stream: &mut WebSocketStream<TcpStream>,
     event_tx: &Sender<Message<Event>>,
     user_id: id,
     connection_id: usize,
@@ -345,7 +344,11 @@ async fn handle_incoming(
 }
 
 #[inline]
-async fn handle_outgoing(message: Bytes, stream: &mut WebSocket<TcpStream>, user_id: id) -> bool {
+async fn handle_outgoing(
+    message: Bytes,
+    stream: &mut WebSocketStream<TcpStream>,
+    user_id: id,
+) -> bool {
     send_with_timeout(message, Duration::from_secs(5), stream)
         .await
         .inspect_err(|e| log::warn!("Failed to send message to {user_id}: {e:?}"))
@@ -356,10 +359,10 @@ async fn handle_outgoing(message: Bytes, stream: &mut WebSocket<TcpStream>, user
 async fn send_with_timeout(
     message: Bytes,
     time: Duration,
-    stream: &mut WebSocket<TcpStream>,
+    stream: &mut WebSocketStream<TcpStream>,
 ) -> Result<()> {
     let send_future = stream.send(WsMessage::Binary(message));
-    match timeout(time, send_future).await {
+    match tokio::time::timeout(time, send_future).await {
         Ok(send_result) => {
             if let Err(e) = send_result {
                 anyhow::bail!("WebSocket send error: {e:?}");
@@ -381,7 +384,7 @@ async fn handle_events(
 ) {
     while let Ok(event) = event_rx.recv_async().await {
         if let Err(e) = event::handle_event(event.clone(), connection_id, &state).await {
-            log::warn!("Error while handling event: {:?} {:?}", e, event);
+            log::warn!("Error while handling event: {:?}: {:?}", e, event);
 
             if let Some(user) = state.users.get(&user_id) {
                 user.send_message(Message {
@@ -426,13 +429,11 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
 
     if update_last_seen {
         let state = state.clone();
-        TOKIO_RT
-            .spawn(async move {
-                if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
-                    warn!("Failed to update last_seen for {}: {:?}", user_id, e);
-                }
-            })
-            .await?;
+        tokio::spawn(async move {
+            if let Err(e) = db::user::update_last_seen(&state.pool, user_id, Utc::now()).await {
+                warn!("Failed to update last_seen for {}: {:?}", user_id, e);
+            }
+        });
     }
 
     Ok(())
