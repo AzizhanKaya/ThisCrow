@@ -8,5 +8,5 @@ pub mod snowflake;
 
 pub use ack::Ack;
 pub use data::Data;
-pub use event::{Event, handle_event};
+pub use event::Event;
 pub use model::{Message, MessageType};

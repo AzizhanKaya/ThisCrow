@@ -50,3 +50,5 @@ impl StdAddAssign<i32> for id {
         self.0 += rhs;
     }
 }
+
+impl nohash_hasher::IsEnabled for id {}

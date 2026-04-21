@@ -10,6 +10,7 @@ use actix_governor::GovernorConfigBuilder;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dashmap::DashMap;
 use dotenv::dotenv;
+use google_cloud_storage::client::{Client, ClientConfig};
 use nohash_hasher::BuildNoHashHasher;
 use once_cell::sync::Lazy;
 use sqlx::PgPool;
@@ -58,7 +59,6 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv().ok();
 
-    route::upload::init();
     #[cfg(feature = "mail")]
     tokio::spawn(route::auth::clear_otp_schedular());
 
@@ -70,6 +70,9 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to open RocksDB message store");
 
     let messages = MessageService::new(message_store);
+
+    let config = ClientConfig::default().with_auth().await.unwrap();
+    let gcs_client = web::Data::new(Client::new(config));
 
     let hasher = BuildNoHashHasher::<id::id>::default();
 
@@ -91,16 +94,32 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    let _governor = GovernorConfigBuilder::default()
+    let governor = GovernorConfigBuilder::default()
+        .requests_per_second(50)
+        .burst_size(200)
+        .key_extractor(ratelimiter::UserKeyExtractor)
+        .finish()
+        .unwrap();
+
+    let governor_upload = GovernorConfigBuilder::default()
         .seconds_per_request(10)
-        .burst_size(50)
+        .burst_size(10)
         .key_extractor(ratelimiter::UserKeyExtractor)
         .finish()
         .unwrap();
 
     HttpServer::new(move || {
         let cors = Cors::default()
-            .allowed_origin_fn(|_origin, _req_head| true)
+            .allowed_origin_fn(|origin, _req_head| {
+                matches!(
+                    origin.as_bytes(),
+                    b"http://localhost:5173"
+                        | b"https://tauri.localhost"
+                        | b"http://tauri.localhost"
+                        | b"https://thiscrow.net"
+                        | b"https://www.thiscrow.net"
+                )
+            })
             .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
             .allowed_headers(vec![
                 actix_web::http::header::AUTHORIZATION,
@@ -110,21 +129,25 @@ async fn main() -> std::io::Result<()> {
             .supports_credentials()
             .max_age(3600);
 
-        App::new().wrap(cors).app_data(state.clone()).service(
-            web::scope("/api")
-                .configure(route::auth::configure)
-                .service(ping)
-                .service(
-                    web::scope("")
-                        .wrap(middleware::AuthMiddleware)
-                        //.wrap(Governor::new(&governor))
-                        .configure(route::upload::configure)
-                        .configure(route::state::configure)
-                        .configure(route::info::configure)
-                        .configure(route::message::configure)
-                        .configure(route::invitation::configure),
-                ),
-        )
+        App::new()
+            .wrap(cors)
+            .app_data(state.clone())
+            .app_data(gcs_client.clone())
+            .service(
+                web::scope("/api")
+                    .configure(route::auth::configure)
+                    .service(ping)
+                    .service(
+                        web::scope("")
+                            .wrap(middleware::AuthMiddleware)
+                            //.wrap(Governor::new(&governor))
+                            .configure(route::upload::configure)
+                            .configure(route::state::configure)
+                            .configure(route::info::configure)
+                            .configure(route::message::configure)
+                            .configure(route::invitation::configure),
+                    ),
+            )
     })
     .bind("0.0.0.0:8080")?
     .run()

@@ -19,7 +19,7 @@ pub struct Connection {
     pub writer: Sender<Bytes>,
 }
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Debug, Default)]
 pub struct State {
     pub id: id,
     pub version: id,
@@ -38,10 +38,10 @@ pub struct State {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub enum Status {
-    #[default]
     Online,
     Idle,
     Dnd,
+    #[default]
     Offline,
 }
 
@@ -52,12 +52,13 @@ pub enum Activity {
     Music(Music),
     Watching {
         video: id,
-        offset: i64,
+        offset: f64,
+        playing: bool,
     },
     Streaming {
         group_id: id,
         channel_id: id,
-        time: i64,
+        time: f64,
     },
 }
 
@@ -68,15 +69,18 @@ pub struct Music {
     pub album: String,
     pub album_url: String,
     pub length: u64,
-    pub offset: i64,
-    #[serde(default)]
+    pub offset: f64,
     pub paused: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Game {
     pub app_id: u64,
-    pub start_time: i64,
+    pub start_time: f64,
+    pub name: String,
+    pub header_image: String,
+    pub short_description: String,
+    pub background: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

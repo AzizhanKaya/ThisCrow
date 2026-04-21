@@ -51,4 +51,7 @@ pub enum Data {
         cipher: Vec<u8>,
     },
     MultiData(MultiData),
+    Call {
+        end_time: Option<f64>,
+    },
 }

@@ -100,8 +100,16 @@ async fn ws_handshake(stream: TcpStream, state: State) {
             return Ok(response);
         }
 
+        let origin = req
+            .headers()
+            .get(http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("*");
+
         let reject = http::Response::builder()
             .status(http::StatusCode::UNAUTHORIZED)
+            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin)
+            .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
             .body(Some("Unauthorized".to_string()))
             .unwrap();
 
@@ -168,9 +176,7 @@ async fn initialize_session(
         friend_requests: incoming,
         friend_requests_sent: outgoing,
         dms,
-        status: user::Status::Online,
-        activities: vec![],
-        voice: None,
+        ..Default::default()
     };
 
     let session_initialized = Message {
@@ -423,6 +429,10 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
 
             update_last_seen = true;
         } else {
+            if let Some(voice) = user.state.voice.take() {
+                disconnect_voice(&user, voice.r#type, &state);
+            }
+
             user.connections.retain(|c| c.id != connection_id);
         }
     }
@@ -453,14 +463,11 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                 if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
                     users.remove(&user.state.id);
 
-                    if let Some(watch_party) = watch_party {
-                        watch_party.users.remove(&user.state.id);
-
-                        if watch_party.users.is_empty() {
-                            channel.r#type = ChannelType::Voice {
-                                users: HashSet::new(),
-                                watch_party: None,
-                            };
+                    if let Some(party) = watch_party {
+                        if party.host == user.state.id {
+                            *watch_party = None;
+                        } else {
+                            party.users.remove(&user.state.id);
                         }
                     }
                 }
@@ -479,6 +486,7 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                 );
             }
         }
+
         VoiceType::Direct(other_user_id) => {
             if let Some(other_user) = state.users.get(&other_user_id) {
                 let ack = Message {

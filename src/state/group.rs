@@ -106,8 +106,8 @@ pub struct WatchParty {
     pub video: id,
     pub host: id,
     pub users: HashSet<id>,
-    pub offset: i64,
-    pub play: bool,
+    pub offset: f64,
+    pub playing: bool,
 }
 
 #[derive(Clone, Constructor)]

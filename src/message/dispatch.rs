@@ -35,6 +35,8 @@ pub async fn handle_bytes(
         if let Some(mut user) = state.users.get_mut(&user_id) {
             user.state.dms.insert(message.to);
 
+            let user = user.downgrade();
+
             let message = Bytes::from(msgpack!(message));
 
             for connection in user.connections.iter() {
@@ -51,21 +53,16 @@ pub async fn handle_bytes(
         return Ok(());
     }
 
-    match rmp_serde::from_slice::<Message<Event>>(&bytes) {
-        Ok(mut event) => {
-            event.from = user_id;
+    if let Ok(mut event) = rmp_serde::from_slice::<Message<Event>>(&bytes) {
+        event.from = user_id;
 
-            if *user_id != (*event.id >> 32) as i32 {
-                anyhow::bail!("Invalid event id");
-            }
-
-            event_tx.send(event)?;
-
-            return Ok(());
+        if *user_id != (*event.id >> 32) as i32 {
+            anyhow::bail!("Invalid event id");
         }
-        Err(e) => {
-            log::warn!("Event deserialization error: {:?}", e);
-        }
+
+        event_tx.send(event)?;
+
+        return Ok(());
     }
 
     use rmpv::decode::read_value;

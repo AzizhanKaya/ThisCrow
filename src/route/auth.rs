@@ -1,6 +1,7 @@
 use crate::db;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::create_jwt};
+use actix_web::cookie::SameSite;
 use actix_web::{
     Error, HttpResponse, cookie::Cookie, cookie::time::Duration as CookieDuration, error, web,
 };

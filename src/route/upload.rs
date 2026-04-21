@@ -1,104 +1,104 @@
-use crate::msgpack::MsgPack;
-use actix_multipart::Multipart;
-use actix_web::{Error, error, web};
-use futures_util::StreamExt as _;
+use actix_web::{Error, HttpResponse, error, web};
+use google_cloud_storage::client::Client;
+use google_cloud_storage::sign::{SignedURLMethod, SignedURLOptions};
 use rand::distr::Alphanumeric;
 use rand::{Rng, rng};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha256::digest;
-use std::{fs, io::Write, path::PathBuf};
+use std::time::Duration;
 
-const UPLOAD_DIRS: &[(&str, &str)] = &[
-    ("img", "./uploads/images"),
-    ("pp", "./uploads/profile_pictures"),
-    ("video", "./uploads/videos"),
-    ("file", "./uploads/files"),
-];
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageType {
+    Image,
+    Video,
+    File,
+    Avatar,
+    Icon,
+}
 
-pub fn init() {
-    for (_, path) in UPLOAD_DIRS {
-        fs::create_dir_all(path).expect("Could not create the upload directories");
+impl StorageType {
+    pub fn bucket_name(&self) -> &'static str {
+        match self {
+            StorageType::Image => "thiscrow-media-images",
+            StorageType::Video => "thiscrow-media-videos",
+            StorageType::File => "thiscrow-media-files",
+            StorageType::Avatar => "thiscrow-user-avatars",
+            StorageType::Icon => "thiscrow-server-icons",
+        }
     }
+}
+
+#[derive(Deserialize)]
+pub struct UploadRequest {
+    pub filename: String,
+    pub content_type: String,
+    pub storage_type: StorageType,
 }
 
 #[derive(Serialize)]
-struct UploadInfo {
-    filename: String,
-    saved_filename: String,
-    r#type: String,
+pub struct UploadResponse {
+    pub original_filename: String,
+    pub saved_filename: String,
+    pub signed_url: String,
+    pub public_url: String,
 }
 
-async fn save_files(mut payload: Multipart) -> Result<Vec<UploadInfo>, Error> {
-    let mut saved_files = Vec::new();
+pub async fn get_upload_signature(
+    payload: web::Json<UploadRequest>,
+    gcs_client: web::Data<Client>,
+) -> Result<HttpResponse, Error> {
+    let req = payload.into_inner();
 
-    while let Some(item) = payload.next().await {
-        let mut field = item?;
+    let extension = req
+        .filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("bin")
+        .to_lowercase();
 
-        let Some(content_disposition) = field.content_disposition() else {
-            continue;
-        };
+    let rand_str: String = rng()
+        .sample_iter(&Alphanumeric)
+        .take(8)
+        .map(char::from)
+        .collect();
 
-        let Some(field_name) = field.name() else {
-            continue;
-        };
+    let hash_name = digest(format!(
+        "{}{}{}",
+        req.filename,
+        rand_str,
+        chrono::Utc::now()
+    ));
 
-        let Some(filename) = content_disposition.get_filename().map(|s| s.to_string()) else {
-            continue;
-        };
+    let saved_filename = format!("{}.{}", hash_name, extension);
 
-        if filename.trim().is_empty() {
-            continue;
-        }
+    let bucket = req.storage_type.bucket_name();
 
-        let extension = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let opts = SignedURLOptions {
+        method: SignedURLMethod::PUT,
+        expires: Duration::from_secs(3600),
+        content_type: Some(req.content_type.clone()),
+        ..Default::default()
+    };
 
-        let dir_key = match field_name {
-            "pp" => "pp",
-            "img" => "img",
-            "video" => "video",
-            _ => "file",
-        };
+    let signed_url = gcs_client
+        .signed_url(bucket, &saved_filename, None, None, opts)
+        .await
+        .map_err(|e| error::ErrorInternalServerError(e.to_string()))?;
 
-        let dir_path = UPLOAD_DIRS
-            .iter()
-            .find(|(key, _)| *key == dir_key)
-            .map(|(_, path)| PathBuf::from(path))
-            .ok_or_else(|| error::ErrorBadRequest("Invalid file type"))?;
+    let response = UploadResponse {
+        original_filename: req.filename,
+        saved_filename: saved_filename.clone(),
+        signed_url,
+        public_url: format!(
+            "https://storage.googleapis.com/{}/{}",
+            bucket, saved_filename
+        ),
+    };
 
-        let rand: String = rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect();
-
-        let hex = digest(format!("{}{}", filename, rand));
-
-        let saved_filename = format!("{}.{}", hex, extension);
-        let filepath = dir_path.join(&saved_filename);
-
-        let mut file = fs::File::create(filepath)?;
-
-        while let Some(chunk) = field.next().await {
-            let data = chunk?;
-            file.write_all(&data)?;
-        }
-
-        saved_files.push(UploadInfo {
-            filename,
-            saved_filename,
-            r#type: dir_key.to_string(),
-        });
-    }
-
-    Ok(saved_files)
-}
-
-async fn upload(payload: Multipart) -> Result<MsgPack<Vec<UploadInfo>>, Error> {
-    let saved_files = save_files(payload).await?;
-
-    Ok(MsgPack(saved_files))
+    Ok(HttpResponse::Ok().json(response))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.route("/upload", web::post().to(upload));
+    cfg.route("/upload", web::put().to(get_upload_signature));
 }

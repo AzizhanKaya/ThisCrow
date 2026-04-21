@@ -107,6 +107,7 @@ struct UsersInfo {
     name: String,
     avatar: Option<String>,
     status: Status,
+    activities: Vec<Activity>,
 }
 
 impl From<user::State> for UsersInfo {
@@ -118,6 +119,7 @@ impl From<user::State> for UsersInfo {
             name: value.name,
             avatar: value.avatar,
             status: value.status,
+            activities: value.activities,
         }
     }
 }
@@ -131,6 +133,7 @@ impl From<db::user::User> for UsersInfo {
             name: value.name,
             avatar: value.avatar,
             status: Status::Offline,
+            activities: Vec::new(),
         }
     }
 }

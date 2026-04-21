@@ -1,4 +1,4 @@
-FROM rustlang/rust:nightly-bookworm AS builder
+FROM rust:bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -8,14 +8,13 @@ RUN apt-get update && apt-get install -y \
     cmake \
     make \
     g++ \
+    librocksdb-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
 
 ENV SQLX_OFFLINE=true
-ENV ROCKSDB_STATIC=1
-ENV LIBROCKSDB_SYS_STATIC=1
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -26,10 +25,10 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    librocksdb7.8 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/ThisCrow /usr/local/bin/ThisCrow
-
 
 WORKDIR /
 ENTRYPOINT ["ThisCrow"]

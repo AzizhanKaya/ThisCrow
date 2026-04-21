@@ -92,7 +92,7 @@ pub enum Ack {
     Watching(id),
     UnWatched,
     JumpedTo {
-        offset: i64,
+        offset: f64,
         play: bool,
     },
 }

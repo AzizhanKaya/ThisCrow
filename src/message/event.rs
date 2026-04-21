@@ -111,7 +111,7 @@ pub enum Event {
     Watch(id),
     UnWatch,
     JumpTo {
-        offset: i64,
+        offset: f64,
         play: bool,
     },
 }
@@ -121,7 +121,7 @@ pub enum Event {
 #[serde(tag = "music", content = "payload")]
 pub enum MusicEvent {
     Playing(user::Music),
-    Seek(i64),
+    Seek(f64),
     Paused,
     Stopped,
 }
@@ -194,8 +194,7 @@ pub async fn handle_event(
 
                         match &music_event {
                             MusicEvent::Playing(music) => {
-                                let mut music = music.clone();
-                                music.paused = false;
+                                let music = music.clone();
                                 if let Some(user::Activity::Music(m)) = music_activity {
                                     *m = music;
                                 } else {
@@ -204,11 +203,27 @@ pub async fn handle_event(
                             }
                             MusicEvent::Seek(offset) => {
                                 if let Some(user::Activity::Music(music)) = music_activity {
-                                    music.offset = *offset;
+                                    if music.paused {
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_millis()
+                                            as f64;
+                                        music.offset = now - offset;
+                                    } else {
+                                        music.offset = *offset;
+                                    }
                                 }
                             }
                             MusicEvent::Paused => {
                                 if let Some(user::Activity::Music(music)) = music_activity {
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                        as f64;
+
+                                    music.offset = now - music.offset;
                                     music.paused = true;
                                 }
                             }
@@ -225,8 +240,6 @@ pub async fn handle_event(
                             data: Ack::MusicActivity(music_event),
                             ..Message::default()
                         };
-
-                        println!("{:?}", user.state.activities);
 
                         let user = user.downgrade();
 
@@ -548,12 +561,15 @@ pub async fn handle_event(
                             let ack = Message {
                                 id: message.id,
                                 from: group_id,
+                                to: message.from,
                                 data: Ack::Subscribed(Box::new(group.clone())),
                                 ..Message::default()
                             };
 
                             user.send_message(ack);
                         }
+                    } else {
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -734,9 +750,9 @@ pub async fn handle_event(
 
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, Some(channel_id));
-                        /*if !perms.contains(Permissions::CONNECT) {
+                        if !perms.contains(Permissions::CONNECT) {
                             anyhow::bail!("Unauthorized to join channel");
-                        }*/
+                        }
                     } else {
                         anyhow::bail!("Group not found");
                     }
@@ -745,6 +761,12 @@ pub async fn handle_event(
                         let Some(channel) = group.channels.get_mut(&channel_id) else {
                             anyhow::bail!("Channel not found");
                         };
+
+                        if let Some(user) = state.users.get(&message.from) {
+                            if user.state.voice.is_some() {
+                                anyhow::bail!("User is already in a voice channel");
+                            }
+                        }
 
                         match channel.r#type {
                             ChannelType::Voice { ref mut users, .. } => {
@@ -758,10 +780,6 @@ pub async fn handle_event(
                         let group = group.downgrade();
 
                         if let Some(mut user) = state.users.get_mut(&message.from) {
-                            if user.state.voice.is_some() {
-                                anyhow::bail!("User is already in a voice channel");
-                            }
-
                             user.state.voice = Some(Voice {
                                 connection_id,
                                 r#type: VoiceType::Channel {
@@ -780,6 +798,8 @@ pub async fn handle_event(
                         };
 
                         group.notify(ack, &state);
+                    } else {
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -815,6 +835,8 @@ pub async fn handle_event(
                         };
 
                         group.notify(ack, &state);
+                    } else {
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -844,6 +866,8 @@ pub async fn handle_event(
                         let group = group.downgrade();
 
                         group.notify(ack, &state);
+                    } else {
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -1159,7 +1183,7 @@ pub async fn handle_event(
 
                         let group = group.downgrade();
 
-                        group.notify_without(ack, message.from, &state);
+                        group.notify(ack, &state);
                     }
                 }
 
@@ -1195,7 +1219,7 @@ pub async fn handle_event(
 
                         let group = group.downgrade();
 
-                        group.notify_without(ack, message.from, &state);
+                        group.notify(ack, &state);
                     }
                 }
 
@@ -1224,7 +1248,7 @@ pub async fn handle_event(
                         }
 
                         watch_party.offset = offset;
-                        watch_party.play = play;
+                        watch_party.playing = play;
 
                         let ack = Message {
                             id: message.id,
@@ -1234,7 +1258,7 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
-                        group.notify_without(ack, message.from, &state);
+                        group.notify(ack, &state);
                     }
                 }
 
