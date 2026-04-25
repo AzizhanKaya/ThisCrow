@@ -48,7 +48,7 @@ pub async fn handle_bytes(
             }
         }
 
-        dispatch_message(state, message);
+        dispatch_message(state, message).await;
 
         return Ok(());
     }
@@ -73,10 +73,10 @@ pub async fn handle_bytes(
     anyhow::bail!("Unkown message struct: {:?}", value);
 }
 
-fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) -> Result<()> {
+async fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) -> Result<()> {
     if matches!(message.r#type, MessageType::Direct | MessageType::Group(_)) {
         let message: StoredMessage = message.clone().try_into()?;
-        state.messages.save_message(message)?;
+        state.messages.save_message(message).await?;
     }
 
     match message.r#type {

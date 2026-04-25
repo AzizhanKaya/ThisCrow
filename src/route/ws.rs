@@ -160,7 +160,8 @@ async fn initialize_session(
     let outgoing = outgoing_res?;
     let dms: HashSet<id> = state
         .messages
-        .get_dms(user_id)?
+        .get_dms(user_id)
+        .await?
         .into_iter()
         .map(|(i, _)| i)
         .collect();

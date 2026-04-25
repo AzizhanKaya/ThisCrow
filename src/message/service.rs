@@ -14,37 +14,37 @@ impl MessageService {
         Self { store }
     }
 
-    pub fn get(&self, message_id: snowflake_id) -> Result<StoredMessage> {
-        self.store.get(message_id)
+    pub async fn get(&self, message_id: snowflake_id) -> Result<StoredMessage> {
+        self.store.get(message_id).await
     }
 
-    pub fn save_message(&self, msg: StoredMessage) -> Result<()> {
-        self.store.write(msg)
+    pub async fn save_message(&self, msg: StoredMessage) -> Result<()> {
+        self.store.write(msg).await
     }
 
-    pub fn overwrite(&self, message: StoredMessage) -> Result<()> {
-        self.store.overwrite(message)
+    pub async fn overwrite(&self, message: StoredMessage) -> Result<()> {
+        self.store.overwrite(message).await
     }
 
-    pub fn delete(&self, message_id: snowflake_id) -> Result<()> {
-        self.store.delete(message_id)
+    pub async fn delete(&self, message_id: snowflake_id) -> Result<()> {
+        self.store.delete(message_id).await
     }
 
-    pub fn remove_dm(&self, from: id, to: id) -> Result<()> {
-        self.store.remove_dm(from, to)
+    pub async fn remove_dm(&self, from: id, to: id) -> Result<()> {
+        self.store.remove_dm(from, to).await
     }
 
-    pub fn get_channel_messages(
+    pub async fn get_channel_messages(
         &self,
         channel_id: id,
         start: Option<DateTime<Utc>>,
         end: DateTime<Utc>,
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
-        self.store.get_channel_messages(channel_id, len, start, end)
+        self.store.get_channel_messages(channel_id, len, start, end).await
     }
 
-    pub fn get_direct_messages(
+    pub async fn get_direct_messages(
         &self,
         user1: id,
         user2: id,
@@ -53,10 +53,10 @@ impl MessageService {
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
         self.store
-            .get_direct_messages(user1, user2, len, start, end)
+            .get_direct_messages(user1, user2, len, start, end).await
     }
 
-    pub fn get_dms(&self, user_id: id) -> Result<Vec<(id, snowflake_id)>> {
-        self.store.get_dms(user_id)
+    pub async fn get_dms(&self, user_id: id) -> Result<Vec<(id, snowflake_id)>> {
+        self.store.get_dms(user_id).await
     }
 }

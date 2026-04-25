@@ -73,7 +73,7 @@ pub async fn get_dms(
     state: State,
     user: web::ReqData<JwtUser>,
 ) -> Result<MsgPack<Vec<(id, snowflake_id)>>, Error> {
-    let dms = state.messages.get_dms(user.id).map_err(|e| {
+    let dms = state.messages.get_dms(user.id).await.map_err(|e| {
         warn!("Error while getting dms: {}", e);
         error::ErrorInternalServerError("Error while getting dms")
     })?;

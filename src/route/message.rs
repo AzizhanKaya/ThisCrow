@@ -23,6 +23,7 @@ pub async fn get_messages(
     let messages = state
         .messages
         .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
+        .await
         .map_err(|e| {
             log::error!("Error while getting messages: {:?}", e);
             error::ErrorInternalServerError("Error while getting messages")
@@ -59,6 +60,7 @@ pub async fn get_channel_messages(
     let messages = state
         .messages
         .get_channel_messages(query.channel_id, query.start, query.end, query.len)
+        .await
         .map_err(|e| {
             log::error!("Error while getting messages: {:?}", e);
             error::ErrorInternalServerError("Error while getting messages")
@@ -81,6 +83,7 @@ async fn overwrite_message(
     let mut message = state
         .messages
         .get(message_id)
+        .await
         .map_err(ErrorInternalServerError)?;
 
     message.overwrited = Some(());
@@ -112,6 +115,7 @@ async fn overwrite_message(
     state
         .messages
         .overwrite(message)
+        .await
         .map_err(ErrorInternalServerError)
 }
 
@@ -123,6 +127,7 @@ async fn delete_message(
     let message = state
         .messages
         .get(message_id)
+        .await
         .map_err(ErrorInternalServerError)?;
 
     let is_author = message.from == user.id;
@@ -152,6 +157,7 @@ async fn delete_message(
     state
         .messages
         .delete(message.id)
+        .await
         .map_err(ErrorInternalServerError)
 }
 
@@ -163,6 +169,7 @@ async fn remove_dm(
     state
         .messages
         .remove_dm(user.id, user_id)
+        .await
         .map_err(ErrorInternalServerError)
 }
 
