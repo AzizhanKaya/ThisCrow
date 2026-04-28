@@ -10,7 +10,7 @@ use crate::{State, db};
 use actix_web::{Error, HttpResponse, error, web};
 use chrono::{DateTime, Duration, Utc};
 use rand::{Rng, distr::Alphanumeric};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 struct CreateInvitationRequest {
@@ -96,8 +96,16 @@ async fn join_invitation(
             error::ErrorInternalServerError("Error increment invitation uses")
         })?;
 
+    let ack = Message {
+        from: invitation.group_id,
+        to: user.id,
+        data: Ack::JoinedMember,
+        ..Default::default()
+    };
+
     if let Some(mut user) = state.users.get_mut(&user.id) {
         user.state.groups.push(invitation.group_id);
+        user.send_message(ack.clone());
     }
 
     if let Some(mut group) = state.groups.get_mut(&invitation.group_id) {
@@ -105,15 +113,9 @@ async fn join_invitation(
             .members
             .insert(user.id, Member::new(user.id, None, vec![]));
 
-        group.notify(
-            Message {
-                from: group.id,
-                to: user.id,
-                data: Ack::JoinedMember,
-                ..Default::default()
-            },
-            &state,
-        );
+        let group = group.downgrade();
+
+        group.notify(ack, &state);
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -181,13 +183,12 @@ async fn list_invitations(
     Ok(MsgPack(invitations))
 }
 
-use serde::Serialize;
-
 #[derive(Deserialize)]
 struct InvitationInfoQuery {
     code: String,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 struct InvitationInfo {
     group_id: id,

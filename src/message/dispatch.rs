@@ -96,7 +96,6 @@ pub fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     if let Some(mut user) = state.users.get_mut(&message.to) {
         if matches!(message.r#type, MessageType::Direct) {
             user.state.dms.insert(message.from);
-            user.next_version();
         }
 
         let message = Bytes::from(msgpack!(message));

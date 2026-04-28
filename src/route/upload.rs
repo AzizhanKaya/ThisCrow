@@ -1,3 +1,4 @@
+use crate::msgpack::MsgPack;
 use actix_web::{Error, HttpResponse, error, web};
 use google_cloud_storage::client::Client;
 use google_cloud_storage::sign::{SignedURLMethod, SignedURLOptions};
@@ -15,6 +16,7 @@ pub enum StorageType {
     File,
     Avatar,
     Icon,
+    Banner,
 }
 
 impl StorageType {
@@ -25,6 +27,7 @@ impl StorageType {
             StorageType::File => "thiscrow-media-files",
             StorageType::Avatar => "thiscrow-user-avatars",
             StorageType::Icon => "thiscrow-server-icons",
+            StorageType::Banner => "thiscrow-user-banners",
         }
     }
 }
@@ -45,9 +48,9 @@ pub struct UploadResponse {
 }
 
 pub async fn get_upload_signature(
-    payload: web::Json<UploadRequest>,
+    payload: MsgPack<UploadRequest>,
     gcs_client: web::Data<Client>,
-) -> Result<HttpResponse, Error> {
+) -> Result<MsgPack<UploadResponse>, Error> {
     let req = payload.into_inner();
 
     let extension = req
@@ -96,7 +99,7 @@ pub async fn get_upload_signature(
         ),
     };
 
-    Ok(HttpResponse::Ok().json(response))
+    Ok(MsgPack(response))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

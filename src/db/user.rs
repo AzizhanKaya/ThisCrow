@@ -16,6 +16,7 @@ type id = crate::id::id;
 pub struct User {
     pub id: id,
     pub avatar: Option<String>,
+    pub banner: Option<String>,
     pub name: String,
     pub username: String,
     #[serde(skip_serializing, skip_deserializing)]
@@ -341,16 +342,18 @@ pub async fn update_user(
     user_id: id,
     name: Option<String>,
     avatar: Option<String>,
+    banner: Option<String>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"
         UPDATE users 
-        SET name = COALESCE($2, name), avatar = COALESCE($3, avatar)
+        SET name = COALESCE($2, name), avatar = COALESCE($3, avatar), banner = COALESCE($4, banner)
         WHERE id = $1
         "#,
         *user_id,
         name,
-        avatar
+        avatar,
+        banner
     )
     .execute(pool)
     .await?;

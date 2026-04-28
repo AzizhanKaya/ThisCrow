@@ -32,7 +32,6 @@ pub async fn get_friends(
 pub struct FriendRequets {
     incoming: Vec<id>,
     outgoing: Vec<id>,
-    version: id,
 }
 
 pub async fn get_friend_requets(
@@ -42,13 +41,8 @@ pub async fn get_friend_requets(
     if let Some(user) = state.users.get(&user.id) {
         let incoming = user.state.friend_requests.clone();
         let outgoing = user.state.friend_requests_sent.clone();
-        let version = user.get_version();
 
-        return Ok(MsgPack(FriendRequets {
-            incoming,
-            outgoing,
-            version,
-        }));
+        return Ok(MsgPack(FriendRequets { incoming, outgoing }));
     }
 
     Err(error::ErrorUnauthorized("Session has not initialized"))

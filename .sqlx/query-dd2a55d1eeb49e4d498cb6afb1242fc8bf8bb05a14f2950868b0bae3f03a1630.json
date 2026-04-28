@@ -47,6 +47,11 @@
         "ordinal": 8,
         "name": "last_seen",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "banner",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -63,6 +68,7 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },

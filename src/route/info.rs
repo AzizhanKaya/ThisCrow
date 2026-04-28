@@ -32,10 +32,10 @@ async fn search_user(
 #[derive(Serialize)]
 struct UserInfo {
     id: id,
-    version: id,
     username: String,
     name: String,
     avatar: Option<String>,
+    banner: Option<String>,
     status: Status,
     friends: Vec<id>,
     groups: Vec<id>,
@@ -46,10 +46,10 @@ impl From<state::user::State> for UserInfo {
     fn from(value: state::user::State) -> Self {
         Self {
             id: value.id,
-            version: value.version,
             username: value.username,
             name: value.name,
             avatar: value.avatar,
+            banner: value.banner,
             status: value.status,
             friends: value.friends.into_iter().collect(),
             groups: value.groups,
@@ -88,10 +88,10 @@ async fn get_user(state: State, user_id: web::Path<id>) -> Result<MsgPack<UserIn
 
     Ok(MsgPack(UserInfo {
         id: user.id,
-        version: id(0),
         username: user.username,
         name: user.name,
         avatar: user.avatar,
+        banner: user.banner,
         status: Status::Offline,
         friends,
         groups,
@@ -102,10 +102,10 @@ async fn get_user(state: State, user_id: web::Path<id>) -> Result<MsgPack<UserIn
 #[derive(Serialize)]
 struct UsersInfo {
     id: id,
-    version: id,
     username: String,
     name: String,
     avatar: Option<String>,
+    banner: Option<String>,
     status: Status,
     activities: Vec<Activity>,
 }
@@ -114,10 +114,10 @@ impl From<user::State> for UsersInfo {
     fn from(value: user::State) -> Self {
         Self {
             id: value.id,
-            version: value.version,
             username: value.username,
             name: value.name,
             avatar: value.avatar,
+            banner: value.banner,
             status: value.status,
             activities: value.activities,
         }
@@ -128,10 +128,10 @@ impl From<db::user::User> for UsersInfo {
     fn from(value: db::user::User) -> Self {
         Self {
             id: value.id,
-            version: id(0),
             username: value.username,
             name: value.name,
             avatar: value.avatar,
+            banner: value.banner,
             status: Status::Offline,
             activities: Vec::new(),
         }

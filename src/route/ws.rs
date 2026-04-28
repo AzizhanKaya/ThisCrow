@@ -168,10 +168,10 @@ async fn initialize_session(
 
     let user_state = user::State {
         id: user_id,
-        version: id(0),
         username: user.username,
         name: user.name,
         avatar: user.avatar,
+        banner: user.banner,
         groups,
         friends,
         friend_requests: incoming,
@@ -404,6 +404,7 @@ async fn handle_events(
         }
     }
 }
+
 async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<()> {
     let _user_lock = state.user_locks.write(user_id).await;
     let mut update_last_seen = false;
@@ -415,7 +416,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
             let mut user = entry.remove();
 
             if let Some(voice) = user.state.voice.take() {
-                disconnect_voice(&user, voice.r#type, &state);
+                disconnect_voice(user_id, voice.r#type, &state);
             }
 
             user.send_message_all(
@@ -430,11 +431,13 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
 
             update_last_seen = true;
         } else {
-            if let Some(voice) = user.state.voice.take() {
-                disconnect_voice(&user, voice.r#type, &state);
-            }
-
+            let voice = user.state.voice.take();
             user.connections.retain(|c| c.id != connection_id);
+            drop(entry);
+
+            if let Some(voice) = voice {
+                disconnect_voice(user_id, voice.r#type, &state);
+            }
         }
     }
 
@@ -450,7 +453,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
     Ok(())
 }
 
-fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State) -> Result<()> {
+fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Result<()> {
     match voice {
         VoiceType::Channel {
             group_id,
@@ -462,13 +465,13 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                 };
 
                 if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
-                    users.remove(&user.state.id);
+                    users.remove(&user_id);
 
                     if let Some(party) = watch_party {
-                        if party.host == user.state.id {
+                        if party.host == user_id {
                             *watch_party = None;
                         } else {
-                            party.users.remove(&user.state.id);
+                            party.users.remove(&user_id);
                         }
                     }
                 }
@@ -479,7 +482,7 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                     Message {
                         id: state.snowflake.generate(),
                         from: group_id,
-                        to: user.state.id,
+                        to: user_id,
                         data: Ack::ExitedVoice(channel_id),
                         ..Default::default()
                     },
@@ -493,7 +496,7 @@ fn disconnect_voice(user: &user::Session, voice: user::VoiceType, state: &State)
                 let ack = Message {
                     id: state.snowflake.generate(),
                     to: other_user.state.id,
-                    data: Ack::ExitedVoice(user.state.id),
+                    data: Ack::ExitedVoice(user_id),
                     ..Default::default()
                 };
 

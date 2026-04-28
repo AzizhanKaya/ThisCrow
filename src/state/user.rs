@@ -22,10 +22,10 @@ pub struct Connection {
 #[derive(Clone, Serialize, Debug, Default)]
 pub struct State {
     pub id: id,
-    pub version: id,
     pub username: String,
     pub name: String,
     pub avatar: Option<String>,
+    pub banner: Option<String>,
     pub status: Status,
     pub friends: HashSet<id>,
     pub friend_requests: Vec<id>,
@@ -96,15 +96,6 @@ pub enum VoiceType {
 }
 
 impl Session {
-    pub fn next_version(&mut self) -> id {
-        self.state.version += 1;
-        self.state.version
-    }
-
-    pub fn get_version(&self) -> id {
-        self.state.version
-    }
-
     pub fn send_bytes(&self, bytes: impl Into<Bytes>) {
         let bytes = bytes.into();
         for connection in self.connections.iter() {

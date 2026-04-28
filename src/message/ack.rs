@@ -31,6 +31,7 @@ pub enum Ack {
     UpdatedUser {
         name: Option<String>,
         avatar: Option<String>,
+        banner: Option<String>,
     },
 
     // GROUP

@@ -3,3 +3,5 @@
 /uploads
 /data
 *.json
+.gitignore
+CLAUDE.md

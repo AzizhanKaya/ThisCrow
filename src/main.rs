@@ -56,8 +56,8 @@ pub static DOMAIN: Lazy<String> = Lazy::new(|| env::var("DOMAIN").expect("DOMAIN
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init();
     dotenv().ok();
+    env_logger::init();
 
     #[cfg(feature = "mail")]
     tokio::spawn(route::auth::clear_otp_schedular());

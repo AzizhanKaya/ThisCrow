@@ -18,6 +18,7 @@ pub enum Event {
     UpdateUser {
         name: Option<String>,
         avatar: Option<String>,
+        banner: Option<String>,
     },
     ChangeStatus(user::Status),
 
@@ -143,20 +144,39 @@ pub async fn handle_event(
         MessageType::Info => {
             match message.data {
                 /* ===== USER ===== */
-                Event::UpdateUser { name, avatar } => {
-                    db::user::update_user(&state.pool, message.from, name.clone(), avatar.clone())
-                        .await?;
+                Event::UpdateUser {
+                    name,
+                    avatar,
+                    banner,
+                } => {
+                    db::user::update_user(
+                        &state.pool,
+                        message.from,
+                        name.clone(),
+                        avatar.clone(),
+                        banner.clone(),
+                    )
+                    .await?;
 
                     if let Some(mut user) = state.users.get_mut(&message.from) {
                         if let Some(name) = name.clone() {
                             user.state.name = name;
                         }
-                        user.state.avatar = avatar.clone();
+                        if let Some(avatar) = avatar.clone() {
+                            user.state.avatar = Some(avatar);
+                        }
+                        if let Some(banner) = banner.clone() {
+                            user.state.banner = Some(banner);
+                        }
 
                         let ack = Message {
                             id: message.id,
                             from: message.from,
-                            data: Ack::UpdatedUser { name, avatar },
+                            data: Ack::UpdatedUser {
+                                name,
+                                avatar,
+                                banner,
+                            },
                             ..Message::default()
                         };
 
@@ -455,7 +475,6 @@ pub async fn handle_event(
 
                     if let Some(mut user) = state.users.get_mut(&message.from) {
                         user.state.groups.push(group_id);
-                        user.next_version();
                         user.send_message(ack);
                     }
                 }
