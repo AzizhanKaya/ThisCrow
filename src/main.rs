@@ -6,7 +6,7 @@ use crate::lockmap::LockMap;
 use crate::message::service::MessageService;
 use crate::message::snowflake::SnowflakeGenerator;
 use actix_cors::Cors;
-use actix_governor::GovernorConfigBuilder;
+use actix_governor::{Governor, GovernorConfigBuilder};
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dashmap::DashMap;
 use dotenv::dotenv;
@@ -16,6 +16,8 @@ use once_cell::sync::Lazy;
 use sqlx::PgPool;
 use state::app::AppState;
 use std::env;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 pub type State = web::Data<AppState>;
 
@@ -76,14 +78,20 @@ async fn main() -> std::io::Result<()> {
 
     let hasher = BuildNoHashHasher::<id::id>::default();
 
+    let shutdown = CancellationToken::new();
+    let tracker = tokio_util::task::TaskTracker::new();
+
     let state = web::Data::new(AppState {
         users: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         groups: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
+        voice_direct: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         user_locks: LockMap::new(),
         group_locks: LockMap::new(),
         pool,
         snowflake: SnowflakeGenerator::new(1),
         messages,
+        shutdown: shutdown.clone(),
+        tracker: tracker.clone(),
     });
 
     let state_ws = state.clone();
@@ -101,9 +109,16 @@ async fn main() -> std::io::Result<()> {
         .finish()
         .unwrap();
 
-    let governor_upload = GovernorConfigBuilder::default()
-        .seconds_per_request(10)
-        .burst_size(10)
+    let governor_upload_fast = GovernorConfigBuilder::default()
+        .seconds_per_request(60 / 20)
+        .burst_size(20)
+        .key_extractor(ratelimiter::UserKeyExtractor)
+        .finish()
+        .unwrap();
+
+    let governor_upload_slow = GovernorConfigBuilder::default()
+        .seconds_per_request(60 * 60 / 100)
+        .burst_size(100)
         .key_extractor(ratelimiter::UserKeyExtractor)
         .finish()
         .unwrap();
@@ -140,8 +155,13 @@ async fn main() -> std::io::Result<()> {
                     .service(
                         web::scope("")
                             .wrap(middleware::AuthMiddleware)
-                            //.wrap(Governor::new(&governor))
-                            .configure(route::upload::configure)
+                            .wrap(Governor::new(&governor))
+                            .service(
+                                web::scope("/upload")
+                                    .wrap(Governor::new(&governor_upload_fast))
+                                    .wrap(Governor::new(&governor_upload_slow))
+                                    .configure(route::upload::configure),
+                            )
                             .configure(route::state::configure)
                             .configure(route::info::configure)
                             .configure(route::message::configure)
@@ -151,5 +171,18 @@ async fn main() -> std::io::Result<()> {
     })
     .bind("0.0.0.0:8080")?
     .run()
-    .await
+    .await?;
+
+    log::info!("HTTP server stopped, draining WebSocket sessions");
+    shutdown.cancel();
+    tracker.close();
+
+    tokio::select! {
+        _ = tracker.wait() => log::info!("All sessions drained"),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {
+            log::warn!("Drain timeout, forcing exit");
+        }
+    }
+
+    Ok(())
 }

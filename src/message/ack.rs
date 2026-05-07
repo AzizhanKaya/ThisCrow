@@ -2,7 +2,7 @@ use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::event;
 use crate::message::snowflake::snowflake_id;
-use crate::state::group::Group;
+use crate::state::group::{Group, WatchParty};
 use crate::state::user;
 use serde::Serialize;
 
@@ -88,8 +88,14 @@ pub enum Ack {
 
     // ==== WATCH PARTY ====
     CreatedParty(id),
-    JoinedParty(id),
-    LeftParty(id),
+    JoinedParty {
+        channel: id,
+        state: WatchParty,
+    },
+    LeftParty {
+        channel: id,
+        new_host: Option<id>,
+    },
     Watching(id),
     UnWatched,
     JumpedTo {

@@ -1,10 +1,12 @@
 use crate::db;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::create_jwt};
-use actix_web::cookie::SameSite;
 use actix_web::{
     Error, HttpResponse, cookie::Cookie, cookie::time::Duration as CookieDuration, error, web,
 };
+use once_cell::sync::Lazy;
+use regex::Regex;
+use validator::Validate;
 
 #[cfg(feature = "mail")]
 use dashmap::DashMap;
@@ -21,6 +23,8 @@ use {
     rand::{Rng, distr::Alphanumeric},
     tokio::time::{self, Duration as TokioDuration},
 };
+
+static USERNAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
 
 // Authentication
 
@@ -54,12 +58,22 @@ async fn login(login: MsgPack<Login>, state: State) -> Result<HttpResponse, Erro
 static EMAIL_OTP_MAP: Lazy<DashMap<String, (Register, DateTime<Utc>)>> =
     Lazy::new(|| DashMap::new());
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 struct Register {
+    #[validate(length(min = 3, max = 16))]
+    #[validate(regex(path = *USERNAME_RE))]
     username: String,
+
+    #[validate(length(min = 1, max = 20))]
     name: String,
+
+    #[validate(length(min = 8))]
     password: String,
+
+    #[validate(email)]
     email: String,
+
+    #[validate(length(min = 32, max = 32))]
     public_key: Vec<u8>,
 }
 

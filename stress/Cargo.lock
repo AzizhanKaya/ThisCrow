@@ -2183,7 +2183,6 @@ dependencies = [
  "reqwest",
  "rmp-serde",
  "serde",
- "serde_json",
  "tokio",
  "tokio-tungstenite",
  "url",

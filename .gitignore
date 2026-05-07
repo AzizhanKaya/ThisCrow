@@ -5,3 +5,5 @@
 *.json
 .gitignore
 CLAUDE.md
+.claude
+thiscrow.code-workspace

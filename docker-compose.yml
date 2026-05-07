@@ -3,14 +3,8 @@ services:
     image: azizhankaya/thiscrow
     container_name: thiscrow
     restart: always
-    security_opt:
-      - seccomp=unconfined
-    environment:
-      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/thiscrow"
-      JWT_SECRET: ${JWT_SECRET}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      RUST_LOG: warn
-      DOMAIN: thiscrow.net
+    env_file:
+      - .env
     ports:
       - "8080:8080"
       - "8081:8081"

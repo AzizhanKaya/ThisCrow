@@ -220,7 +220,8 @@ pub async fn friend_remove(pool: &Pool<Postgres>, from: id, to: id) -> Result<()
     sqlx::query!(
         r#"
         DELETE FROM friend_requests
-        WHERE "from" = $1 AND "to" = $2
+        WHERE ("from" = $1 AND "to" = $2)
+        OR ("from" = $2 AND "to" = $1)
         "#,
         *from,
         *to

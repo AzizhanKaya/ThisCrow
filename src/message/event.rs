@@ -1,5 +1,6 @@
 use crate::db::{self};
 use crate::id::id;
+use crate::message::data::Data;
 use crate::message::{Ack, MessageType};
 use crate::state::group::{ChannelType, Group};
 use crate::state::group::{Permissions, WatchParty};
@@ -486,67 +487,146 @@ pub async fn handle_event(
                 }
 
                 Event::JoinVoice => {
-                    if let Some(mut user) = state.users.get_mut(&message.from) {
-                        if user.state.voice.is_some() {
-                            anyhow::bail!("Already in a voice channel");
-                        }
-
-                        user.state.voice = Some(Voice {
-                            connection_id,
-                            r#type: VoiceType::Direct(message.to),
-                        });
-
-                        let ack = Message {
-                            id: message.id,
-                            to: message.from,
-                            data: Ack::JoinedVoice(message.to),
-                            ..Message::default()
-                        };
-
-                        user.send_message(ack);
+                    if state
+                        .users
+                        .get(&message.from)
+                        .map_or(false, |u| u.state.voice.is_some())
+                    {
+                        anyhow::bail!("Already in a voice channel");
                     }
 
-                    if let Some(other_user) = state.users.get(&message.to) {
-                        let ack = Message {
-                            id: message.id,
-                            to: message.from,
-                            data: Ack::JoinedVoice(message.to),
-                            ..Message::default()
-                        };
+                    let existing_id = state.users.get(&message.to).and_then(|other| {
+                        match other.state.voice.as_ref()?.r#type {
+                            VoiceType::Direct { user, message_id } if user == message.from => {
+                                Some(message_id)
+                            }
+                            _ => None,
+                        }
+                    });
 
-                        other_user.send_message(ack);
+                    let (call_message_id, is_new) = match existing_id {
+                        Some(i) => (i, false),
+                        None => (state.snowflake.generate(), true),
+                    };
+
+                    let call = Message {
+                        id: call_message_id,
+                        from: message.from,
+                        to: message.to,
+                        data: Data::Call { end_time: None },
+                        r#type: MessageType::Direct,
+                    };
+
+                    if is_new {
+                        state.messages.write(call.clone().try_into()?).await?;
+                    }
+
+                    let ack = Message {
+                        id: message.id,
+                        to: message.from,
+                        data: Ack::JoinedVoice(message.to),
+                        ..Message::default()
+                    };
+
+                    if let Some(mut user) = state.users.get_mut(&message.from) {
+                        user.state.voice = Some(Voice {
+                            connection_id,
+                            r#type: VoiceType::Direct {
+                                user: message.to,
+                                message_id: call_message_id,
+                            },
+                        });
+                        user.send_message(ack.clone());
+                        if is_new {
+                            user.send_message(call.clone());
+                        }
+                    }
+
+                    state
+                        .voice_direct
+                        .entry(message.to)
+                        .or_default()
+                        .insert(message.from);
+
+                    if let Some(other) = state.users.get(&message.to) {
+                        other.send_message(ack);
+                        if is_new {
+                            other.send_message(call);
+                        }
                     }
                 }
 
                 Event::ExitVoice => {
+                    let call_message_id = state
+                        .users
+                        .get(&message.from)
+                        .and_then(|user| match user.state.voice.as_ref()?.r#type {
+                            VoiceType::Direct {
+                                user: other,
+                                message_id,
+                            } if other == message.to => Some(message_id),
+                            _ => None,
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("Not in a voice channel"))?;
+
                     if let Some(mut user) = state.users.get_mut(&message.from) {
-                        if user.state.voice.is_none() {
-                            anyhow::bail!("Not in a voice channel");
-                        }
-
                         user.state.voice = None;
-
-                        let user = user.downgrade();
-
-                        let ack = Message {
-                            id: message.id,
-                            to: message.from,
-                            data: Ack::ExitedVoice(message.to),
-                            ..Message::default()
-                        };
-
-                        user.send_message(ack);
                     }
 
-                    if let Some(other_user) = state.users.get(&message.to) {
-                        let ack = Message {
+                    if let Entry::Occupied(mut entry) = state.voice_direct.entry(message.to) {
+                        entry.get_mut().remove(&message.from);
+                        if entry.get().is_empty() {
+                            entry.remove();
+                        }
+                    }
+
+                    let exit_ack = Message {
+                        id: message.id,
+                        to: message.from,
+                        data: Ack::ExitedVoice(message.to),
+                        ..Message::default()
+                    };
+
+                    if let Some(user) = state.users.get(&message.from) {
+                        user.send_message(exit_ack.clone());
+                    }
+                    if let Some(other) = state.users.get(&message.to) {
+                        other.send_message(exit_ack);
+                    }
+
+                    let other_is_in = state.users.get(&message.to).map_or(false, |other| {
+                        matches!(
+                            other.state.voice.as_ref().map(|v| &v.r#type),
+                            Some(VoiceType::Direct { user, message_id })
+                                if *user == message.from && *message_id == call_message_id
+                        )
+                    });
+
+                    if !other_is_in {
+                        let mut stored = state.messages.get(call_message_id).await?;
+                        stored.data = Data::Call {
+                            end_time: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as f64,
+                            ),
+                        };
+                        state.messages.overwrite(stored.clone()).await?;
+
+                        let overwrite_ack = Message {
                             id: message.id,
                             to: message.from,
-                            data: Ack::ExitedVoice(message.to),
+                            data: Ack::Overwritten(Box::new(stored)),
                             ..Message::default()
                         };
 
-                        other_user.send_message(ack);
+                        if let Some(user) = state.users.get(&message.from) {
+                            user.send_message(overwrite_ack.clone());
+                        }
+                        if let Some(user) = state.users.get(&message.to) {
+                            user.send_message(overwrite_ack);
+                        }
                     }
                 }
 
@@ -1100,21 +1180,48 @@ pub async fn handle_event(
                             anyhow::bail!("Channel not found");
                         };
 
-                        if let ChannelType::Voice { watch_party, .. } = &mut channel.r#type {
-                            let party = watch_party.get_or_insert_with(|| WatchParty {
-                                host: message.from,
-                                users: HashSet::from([message.from]),
-                                ..Default::default()
-                            });
+                        let ChannelType::Voice {
+                            users, watch_party, ..
+                        } = &mut channel.r#type
+                        else {
+                            anyhow::bail!("Channel is not a voice channel");
+                        };
 
-                            party.users.insert(message.from);
+                        if !users.contains(&message.from) {
+                            anyhow::bail!("Not in voice channel");
                         }
+
+                        let (was_created, party_snapshot) = match watch_party {
+                            None => {
+                                let party = WatchParty {
+                                    host: message.from,
+                                    users: HashSet::from([message.from]),
+                                    ..Default::default()
+                                };
+                                let snapshot = party.clone();
+                                *watch_party = Some(party);
+                                (true, snapshot)
+                            }
+                            Some(party) => {
+                                party.users.insert(message.from);
+                                (false, party.clone())
+                            }
+                        };
+
+                        let ack_data = if was_created {
+                            Ack::CreatedParty(message.to)
+                        } else {
+                            Ack::JoinedParty {
+                                channel: message.to,
+                                state: party_snapshot,
+                            }
+                        };
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: Ack::JoinedParty(message.to),
+                            data: ack_data,
                             ..Message::default()
                         };
 
@@ -1142,21 +1249,28 @@ pub async fn handle_event(
 
                         party.users.remove(&message.from);
 
-                        if party.users.is_empty() {
+                        let new_host = if party.users.is_empty() {
                             *watch_party = None;
-                        } else if party.host == message.from {
-                            party.host = *party
-                                .users
-                                .iter()
-                                .min()
-                                .expect("Users list is guaranteed to be non-empty");
-                        }
+                            None
+                        } else {
+                            if party.host == message.from {
+                                party.host = *party
+                                    .users
+                                    .iter()
+                                    .min()
+                                    .expect("Users list is guaranteed to be non-empty");
+                            }
+                            Some(party.host)
+                        };
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: Ack::LeftParty(message.to),
+                            data: Ack::LeftParty {
+                                channel: message.to,
+                                new_host,
+                            },
                             ..Message::default()
                         };
 

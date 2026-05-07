@@ -54,21 +54,32 @@ pub async fn listen(port: u16, state: State) -> Result<()> {
     let listener = TcpListener::from_std(std_listener)?;
 
     loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                if let Err(e) = stream.set_nodelay(true) {
-                    log::warn!("Nodelay error: {}", e);
-                }
-                let state = state.clone();
-                tokio::spawn(async move {
-                    ws_handshake(stream, state).await;
-                });
+        tokio::select! {
+            biased;
+            _ = state.shutdown.cancelled() => {
+                log::info!("WebSocket listener shutting down");
+                break;
             }
-            Err(e) => {
-                warn!("Accept error: {:?}", e);
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _)) => {
+                        if let Err(e) = stream.set_nodelay(true) {
+                            log::warn!("Nodelay error: {}", e);
+                        }
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            ws_handshake(stream, state).await;
+                        });
+                    }
+                    Err(e) => {
+                        warn!("Accept error: {:?}", e);
+                    }
+                }
             }
         }
     }
+
+    Ok(())
 }
 
 static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
@@ -189,14 +200,9 @@ async fn initialize_session(
     let connection_id = 1;
 
     let (message_tx, message_rx) = unbounded::<Bytes>();
-    let (event_tx, event_rx) = unbounded::<Message<Event>>();
+    let (event_tx, event_rx) = unbounded::<(usize, Message<Event>)>();
 
-    tokio::spawn(handle_events(
-        event_rx,
-        user_id,
-        connection_id,
-        state.clone(),
-    ));
+    state.tracker.spawn(handle_events(event_rx, state.clone()));
 
     let _ = message_tx.send(Bytes::from(msgpack!(session_initialized)));
 
@@ -211,7 +217,7 @@ async fn initialize_session(
 
     state.users.insert(user_id, user_session);
 
-    tokio::spawn(handle_connection(
+    state.tracker.spawn(handle_connection(
         stream,
         message_rx,
         event_tx,
@@ -246,7 +252,7 @@ async fn add_connection(
         writer: message_tx,
     });
 
-    tokio::spawn(handle_connection(
+    state.tracker.spawn(handle_connection(
         stream,
         message_rx,
         user.event_tx.clone(),
@@ -259,12 +265,16 @@ async fn add_connection(
 async fn handle_connection(
     mut stream: WebSocketStream<TcpStream>,
     message_rx: Receiver<Bytes>,
-    event_tx: Sender<Message<Event>>,
+    event_tx: Sender<(usize, Message<Event>)>,
     user_id: id,
     connection_id: usize,
     state: State,
 ) {
     loop {
+        if state.shutdown.is_cancelled() {
+            break;
+        }
+
         if message_rx.len() > 100 {
             log::warn!("Message queue full (>100) for {user_id}, disconnecting.");
             break;
@@ -280,6 +290,8 @@ async fn handle_connection(
         let _ = stream.flush().await;
 
         tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+
             incoming = stream.next() => {
                  match incoming {
                     Some(Ok(message)) => {
@@ -311,6 +323,8 @@ async fn handle_connection(
         }
     }
 
+    let _ = stream.close(None).await;
+
     log::info!("user disconnected: {user_id}");
     disconnect(user_id, connection_id, state).await;
 }
@@ -319,7 +333,7 @@ async fn handle_connection(
 async fn handle_incoming(
     message: WsMessage,
     stream: &mut WebSocketStream<TcpStream>,
-    event_tx: &Sender<Message<Event>>,
+    event_tx: &Sender<(usize, Message<Event>)>,
     user_id: id,
     connection_id: usize,
     state: &State,
@@ -368,7 +382,7 @@ async fn send_with_timeout(
     time: Duration,
     stream: &mut WebSocketStream<TcpStream>,
 ) -> Result<()> {
-    let send_future = stream.send(WsMessage::Binary(message));
+    let send_future = stream.feed(WsMessage::Binary(message));
     match tokio::time::timeout(time, send_future).await {
         Ok(send_result) => {
             if let Err(e) = send_result {
@@ -383,20 +397,15 @@ async fn send_with_timeout(
     Ok(())
 }
 
-async fn handle_events(
-    event_rx: Receiver<Message<Event>>,
-    user_id: id,
-    connection_id: usize,
-    state: State,
-) {
-    while let Ok(event) = event_rx.recv_async().await {
+async fn handle_events(event_rx: Receiver<(usize, Message<Event>)>, state: State) {
+    while let Ok((connection_id, event)) = event_rx.recv_async().await {
         if let Err(e) = event::handle_event(event.clone(), connection_id, &state).await {
             log::warn!("Error while handling event: {:?}: {:?}", e, event);
 
-            if let Some(user) = state.users.get(&user_id) {
+            if let Some(user) = state.users.get(&event.from) {
                 user.send_message(Message {
                     id: event.id,
-                    from: user_id,
+                    to: event.from,
                     data: Ack::Error(e.to_string()),
                     ..Default::default()
                 });
@@ -415,9 +424,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
         if user.connections.len() <= 1 {
             let mut user = entry.remove();
 
-            if let Some(voice) = user.state.voice.take() {
-                disconnect_voice(user_id, voice.r#type, &state);
-            }
+            let voice = user.state.voice.take();
 
             user.send_message_all(
                 Message {
@@ -429,6 +436,10 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
                 &state,
             );
 
+            if let Some(voice) = voice {
+                disconnect_voice(user_id, voice.r#type, &state).await;
+            }
+
             update_last_seen = true;
         } else {
             let voice = user.state.voice.take();
@@ -436,7 +447,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
             drop(entry);
 
             if let Some(voice) = voice {
-                disconnect_voice(user_id, voice.r#type, &state);
+                disconnect_voice(user_id, voice.r#type, &state).await;
             }
         }
     }
@@ -453,7 +464,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
     Ok(())
 }
 
-fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Result<()> {
+async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Result<()> {
     match voice {
         VoiceType::Channel {
             group_id,
@@ -464,14 +475,26 @@ fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Resul
                     anyhow::bail!("Channel not found");
                 };
 
+                let mut party_event: Option<Option<id>> = None;
+
                 if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
                     users.remove(&user_id);
 
-                    if let Some(party) = watch_party {
-                        if party.host == user_id {
-                            *watch_party = None;
-                        } else {
-                            party.users.remove(&user_id);
+                    if let Some(party) = watch_party.as_mut() {
+                        if party.users.remove(&user_id) {
+                            if party.users.is_empty() {
+                                *watch_party = None;
+                                party_event = Some(None);
+                            } else {
+                                if party.host == user_id {
+                                    party.host = *party
+                                        .users
+                                        .iter()
+                                        .min()
+                                        .expect("Users list is guaranteed to be non-empty");
+                                }
+                                party_event = Some(Some(party.host));
+                            }
                         }
                     }
                 }
@@ -488,10 +511,29 @@ fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Resul
                     },
                     &state,
                 );
+
+                if let Some(new_host) = party_event {
+                    group.notify(
+                        Message {
+                            id: state.snowflake.generate(),
+                            from: group_id,
+                            to: user_id,
+                            data: Ack::LeftParty {
+                                channel: channel_id,
+                                new_host,
+                            },
+                            ..Default::default()
+                        },
+                        &state,
+                    );
+                }
             }
         }
 
-        VoiceType::Direct(other_user_id) => {
+        VoiceType::Direct {
+            user: other_user_id,
+            message_id: call_message_id,
+        } => {
             if let Some(other_user) = state.users.get(&other_user_id) {
                 let ack = Message {
                     id: state.snowflake.generate(),
@@ -500,7 +542,45 @@ fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) -> Resul
                     ..Default::default()
                 };
 
+                state
+                    .voice_direct
+                    .entry(other_user_id)
+                    .or_default()
+                    .remove(&user_id);
+
                 other_user.send_message(ack);
+            }
+
+            let other_still_in = state.users.get(&other_user_id).map_or(false, |other| {
+                matches!(
+                    other.state.voice.as_ref().map(|v| &v.r#type),
+                    Some(VoiceType::Direct { user, message_id })
+                        if *user == user_id && *message_id == call_message_id
+                )
+            });
+
+            if !other_still_in {
+                let mut stored = state.messages.get(call_message_id).await?;
+                let end_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as f64;
+                stored.data = crate::message::Data::Call {
+                    end_time: Some(end_time),
+                };
+
+                state.messages.overwrite(stored.clone()).await?;
+
+                let ack = Message {
+                    id: state.snowflake.generate(),
+                    to: user_id,
+                    data: Ack::Overwritten(Box::new(stored)),
+                    ..Default::default()
+                };
+
+                if let Some(other_user) = state.users.get(&other_user_id) {
+                    other_user.send_message(ack);
+                }
             }
         }
     }

@@ -18,7 +18,7 @@ impl MessageService {
         self.store.get(message_id).await
     }
 
-    pub async fn save_message(&self, msg: StoredMessage) -> Result<()> {
+    pub async fn write(&self, msg: StoredMessage) -> Result<()> {
         self.store.write(msg).await
     }
 
@@ -41,7 +41,9 @@ impl MessageService {
         end: DateTime<Utc>,
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
-        self.store.get_channel_messages(channel_id, len, start, end).await
+        self.store
+            .get_channel_messages(channel_id, len, start, end)
+            .await
     }
 
     pub async fn get_direct_messages(
@@ -53,7 +55,8 @@ impl MessageService {
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
         self.store
-            .get_direct_messages(user1, user2, len, start, end).await
+            .get_direct_messages(user1, user2, len, start, end)
+            .await
     }
 
     pub async fn get_dms(&self, user_id: id) -> Result<Vec<(id, snowflake_id)>> {
