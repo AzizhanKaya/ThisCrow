@@ -51,8 +51,22 @@ pub enum Data {
         cipher: Vec<u8>,
     },
     MultiData(MultiData),
-    #[serde(skip)]
     Call {
+        #[serde(deserialize_with = "require_option")]
         end_time: Option<f64>,
     },
+}
+
+fn require_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+impl Default for Data {
+    fn default() -> Self {
+        Data::Text("".to_string())
+    }
 }

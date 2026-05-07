@@ -13,7 +13,7 @@ pub async fn handle_bytes(
     bytes: Bytes,
     user_id: id,
     connection_id: usize,
-    event_tx: &Sender<Message<Event>>,
+    event_tx: &Sender<(usize, Message<Event>)>,
     state: &State,
 ) -> Result<()> {
     if let Ok(mut message) = rmp_serde::from_slice::<Message<Data>>(&bytes) {
@@ -60,7 +60,9 @@ pub async fn handle_bytes(
             anyhow::bail!("Invalid event id");
         }
 
-        event_tx.send(event)?;
+        println!("{:?}", event);
+
+        event_tx.send((connection_id, event))?;
 
         return Ok(());
     }
@@ -76,7 +78,7 @@ pub async fn handle_bytes(
 async fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) -> Result<()> {
     if matches!(message.r#type, MessageType::Direct | MessageType::Group(_)) {
         let message: StoredMessage = message.clone().try_into()?;
-        state.messages.save_message(message).await?;
+        state.messages.write(message).await?;
     }
 
     match message.r#type {

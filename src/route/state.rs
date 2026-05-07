@@ -2,8 +2,8 @@ use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::JwtUser};
+use actix_web::cookie::Cookie;
 use actix_web::cookie::time::Duration as CookieDuration;
-use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{Error, HttpResponse, error, web};
 use log::warn;
 use serde::Serialize;
@@ -87,6 +87,19 @@ pub async fn log_out() -> Result<HttpResponse, Error> {
         .finish())
 }
 
+pub async fn get_voice_direct(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<MsgPack<HashSet<id>>, Error> {
+    let voice_direct = state
+        .voice_direct
+        .get(&user.id)
+        .map(|v| v.value().clone())
+        .unwrap_or_default();
+
+    Ok(MsgPack(voice_direct))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/state")
@@ -95,6 +108,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/dms", web::get().to(get_dms))
             .route("/groups", web::get().to(get_groups))
             .route("/me", web::get().to(me))
+            .route("/voice_direct", web::get().to(get_voice_direct))
             .route("/logout", web::get().to(log_out)),
     );
 }

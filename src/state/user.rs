@@ -1,6 +1,6 @@
 use crate::{
     id::id,
-    message::{Event, Message, dispatch},
+    message::{Event, Message, dispatch, snowflake::snowflake_id},
     msgpack,
 };
 use bytes::Bytes;
@@ -11,7 +11,7 @@ use std::collections::HashSet;
 pub struct Session {
     pub state: State,
     pub connections: Vec<Connection>,
-    pub event_tx: Sender<Message<Event>>,
+    pub event_tx: Sender<(usize, Message<Event>)>, // (connection_id, event)
 }
 
 pub struct Connection {
@@ -34,6 +34,7 @@ pub struct State {
     pub groups: Vec<id>,
     pub activities: Vec<Activity>,
     pub voice: Option<Voice>,
+    pub on_voice_direct: HashSet<id>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -91,8 +92,14 @@ pub struct Voice {
 
 #[derive(Clone, Debug, Serialize)]
 pub enum VoiceType {
-    Direct(id),
-    Channel { group_id: id, channel_id: id },
+    Direct {
+        user: id,
+        message_id: snowflake_id,
+    },
+    Channel {
+        group_id: id,
+        channel_id: id,
+    },
 }
 
 impl Session {
@@ -105,6 +112,16 @@ impl Session {
 
     pub fn send_message<T: Serialize>(&self, message: Message<T>) {
         self.send_bytes(msgpack!(message));
+    }
+
+    pub fn send_message_connection<T: Serialize>(&self, connection_id: usize, message: Message<T>) {
+        if let Some(connection) = self
+            .connections
+            .iter()
+            .find(|connection| connection.id == connection_id)
+        {
+            connection.writer.send(Bytes::from(msgpack!(message)));
+        }
     }
 
     pub fn send_message_all<T: Serialize + Clone>(

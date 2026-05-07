@@ -170,7 +170,13 @@ async fn remove_dm(
         .messages
         .remove_dm(user.id, user_id)
         .await
-        .map_err(ErrorInternalServerError)
+        .map_err(ErrorInternalServerError);
+
+    if let Some(mut user) = state.users.get_mut(&user_id) {
+        user.state.dms.remove(&user_id);
+    }
+
+    Ok(())
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

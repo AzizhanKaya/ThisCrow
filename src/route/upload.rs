@@ -1,11 +1,12 @@
 use crate::msgpack::MsgPack;
-use actix_web::{Error, HttpResponse, error, web};
+use actix_web::{Error, error, web};
 use google_cloud_storage::client::Client;
 use google_cloud_storage::sign::{SignedURLMethod, SignedURLOptions};
 use rand::distr::Alphanumeric;
 use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use sha256::digest;
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
@@ -45,7 +46,10 @@ pub struct UploadResponse {
     pub saved_filename: String,
     pub signed_url: String,
     pub public_url: String,
+    pub extension_headers: HashMap<String, String>,
 }
+
+pub const MAX_UPLOAD_SIZE: u64 = 1024 * 1024 * 100;
 
 pub async fn get_upload_signature(
     payload: MsgPack<UploadRequest>,
@@ -77,10 +81,14 @@ pub async fn get_upload_signature(
 
     let bucket = req.storage_type.bucket_name();
 
+    let size_range_value = format!("0,{}", MAX_UPLOAD_SIZE);
+    let gcs_header = format!("x-goog-content-length-range:{}", size_range_value);
+
     let opts = SignedURLOptions {
         method: SignedURLMethod::PUT,
         expires: Duration::from_secs(3600),
-        content_type: Some(req.content_type.clone()),
+        content_type: Some(req.content_type),
+        headers: vec![gcs_header],
         ..Default::default()
     };
 
@@ -97,11 +105,15 @@ pub async fn get_upload_signature(
             "https://storage.googleapis.com/{}/{}",
             bucket, saved_filename
         ),
+        extension_headers: HashMap::from([(
+            "x-goog-content-length-range".to_string(),
+            size_range_value,
+        )]),
     };
 
     Ok(MsgPack(response))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.route("/upload", web::put().to(get_upload_signature));
+    cfg.route("", web::put().to(get_upload_signature));
 }
