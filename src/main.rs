@@ -155,7 +155,6 @@ async fn main() -> std::io::Result<()> {
                     .service(
                         web::scope("")
                             .wrap(middleware::AuthMiddleware)
-                            .wrap(Governor::new(&governor))
                             .service(
                                 web::scope("/upload")
                                     .wrap(Governor::new(&governor_upload_fast))
@@ -166,7 +165,8 @@ async fn main() -> std::io::Result<()> {
                             .configure(route::info::configure)
                             .configure(route::message::configure)
                             .configure(route::invitation::configure),
-                    ),
+                    )
+                    .wrap(Governor::new(&governor)),
             )
     })
     .bind("0.0.0.0:8080")?

@@ -168,7 +168,6 @@ async fn get_users(
 #[derive(Serialize)]
 struct GroupInfo {
     id: id,
-    version: id,
     name: String,
     icon: Option<String>,
 }
@@ -177,7 +176,6 @@ impl From<&state::group::Group> for GroupInfo {
     fn from(value: &state::group::Group) -> Self {
         Self {
             id: value.id,
-            version: value.version,
             name: value.name.clone(),
             icon: value.icon.clone(),
         }
@@ -188,7 +186,6 @@ impl From<db::group::Group> for GroupInfo {
     fn from(value: db::group::Group) -> Self {
         Self {
             id: value.id,
-            version: id(0),
             name: value.name,
             icon: value.icon,
         }

@@ -2,7 +2,7 @@ use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::event;
 use crate::message::snowflake::snowflake_id;
-use crate::state::group::{Group, WatchParty};
+use crate::state::group::{Group, OverrideTarget};
 use crate::state::user;
 use serde::Serialize;
 
@@ -76,10 +76,22 @@ pub enum Ack {
         name: Option<String>,
         permissions: Option<u64>,
         color: Option<String>,
+        position: Option<usize>,
     },
     DeletedGroup,
     DeletedChannel,
     DeletedRole,
+    SetPermissionOverride {
+        target: OverrideTarget,
+        allow: u64,
+        deny: u64,
+    },
+    DeletedPermissionOverride {
+        target: OverrideTarget,
+    },
+    MovedGroup {
+        position: usize,
+    },
 
     // VOICE
     JoinedVoice(id),
@@ -87,17 +99,11 @@ pub enum Ack {
     MovedToVoice(id),
 
     // ==== WATCH PARTY ====
-    CreatedParty(id),
-    JoinedParty {
-        channel: id,
-        state: WatchParty,
+    JoinedParty,
+    LeftParty,
+    Watching {
+        video: id,
     },
-    LeftParty {
-        channel: id,
-        new_host: Option<id>,
-    },
-    Watching(id),
-    UnWatched,
     JumpedTo {
         offset: f64,
         play: bool,

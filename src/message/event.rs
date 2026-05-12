@@ -2,7 +2,7 @@ use crate::db::{self};
 use crate::id::id;
 use crate::message::data::Data;
 use crate::message::{Ack, MessageType};
-use crate::state::group::{ChannelType, Group};
+use crate::state::group::{ChannelType, Group, OverrideTarget};
 use crate::state::group::{Permissions, WatchParty};
 use crate::state::user::{self, Voice, VoiceType};
 use crate::{State, message::Message};
@@ -46,6 +46,9 @@ pub enum Event {
     DeleteGroup,
     Subscribe,
     Unsubscribe,
+    MoveGroup {
+        position: usize,
+    },
 
     /* ===== ROLE ===== */
     CreateRole {
@@ -84,6 +87,14 @@ pub enum Event {
         position: Option<usize>,
     },
     DeleteChannel,
+    SetPermissionOverride {
+        target: OverrideTarget,
+        allow: u64,
+        deny: u64,
+    },
+    DeletePermissionOverride {
+        target: OverrideTarget,
+    },
 
     /* ===== VOICE ===== */
     JoinVoice,
@@ -111,7 +122,6 @@ pub enum Event {
     JoinParty,
     LeaveParty,
     Watch(id),
-    UnWatch,
     JumpTo {
         offset: f64,
         play: bool,
@@ -696,6 +706,27 @@ pub async fn handle_event(
                     }
                 }
 
+                Event::MoveGroup { position } => {
+                    db::group::update_group_user_position(
+                        &state.pool,
+                        message.from,
+                        group_id,
+                        position as i16,
+                    )
+                    .await?;
+
+                    if let Some(user) = state.users.get(&message.from) {
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: message.from,
+                            data: Ack::MovedGroup { position },
+                            ..Message::default()
+                        };
+                        user.send_message(ack);
+                    }
+                }
+
                 Event::UpdateGroup {
                     name,
                     description,
@@ -840,6 +871,99 @@ pub async fn handle_event(
 
                         let group = group.downgrade();
 
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::SetPermissionOverride {
+                    target,
+                    allow,
+                    deny,
+                } => {
+                    let channel_id = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, Some(channel_id));
+                        if !perms.intersects(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to set permission override");
+                        }
+                        if !group.channels.contains_key(&channel_id) {
+                            anyhow::bail!("Channel not found");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::set_permission_override(
+                        &state.pool,
+                        group_id,
+                        channel_id,
+                        &target,
+                        allow,
+                        deny,
+                    )
+                    .await?;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.set_permission_override(
+                            channel_id,
+                            target.clone(),
+                            Permissions::from_bits_truncate(allow),
+                            Permissions::from_bits_truncate(deny),
+                        );
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: channel_id,
+                            data: Ack::SetPermissionOverride {
+                                target,
+                                allow,
+                                deny,
+                            },
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::DeletePermissionOverride { target } => {
+                    let channel_id = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, Some(channel_id));
+                        if !perms.intersects(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to delete permission override");
+                        }
+                        if !group.channels.contains_key(&channel_id) {
+                            anyhow::bail!("Channel not found");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::delete_permission_override(&state.pool, channel_id, &target).await?;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.remove_permission_override(channel_id, &target);
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: channel_id,
+                            data: Ack::DeletedPermissionOverride { target },
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
                         group.notify(ack, &state);
                     }
                 }
@@ -1041,6 +1165,39 @@ pub async fn handle_event(
 
                     let _lock = state.group_locks.write(group_id).await;
 
+                    if role == crate::id::id(0) {
+                        if name.is_some() || color.is_some() || position.is_some() {
+                            anyhow::bail!("Everyone role only supports permission updates");
+                        }
+                        let Some(perms_bits) = permissions else {
+                            anyhow::bail!("permissions required for everyone role");
+                        };
+
+                        db::group::update_everyone_permissions(&state.pool, group_id, perms_bits)
+                            .await?;
+
+                        if let Some(mut group) = state.groups.get_mut(&group_id) {
+                            group.update_everyone(Permissions::from_bits_truncate(perms_bits));
+
+                            let ack = Message {
+                                id: message.id,
+                                from: group_id,
+                                to: crate::id::id(0),
+                                data: Ack::UpdatedRole {
+                                    name: None,
+                                    color: None,
+                                    permissions: Some(perms_bits),
+                                    position: None,
+                                },
+                                ..Message::default()
+                            };
+
+                            let group = group.downgrade();
+                            group.notify(ack, &state);
+                        }
+                        return Ok(());
+                    }
+
                     db::group::update_role(
                         &state.pool,
                         group_id,
@@ -1069,6 +1226,7 @@ pub async fn handle_event(
                                 name,
                                 color,
                                 permissions,
+                                position,
                             },
                             ..Message::default()
                         };
@@ -1080,6 +1238,9 @@ pub async fn handle_event(
                 }
 
                 Event::DeleteRole { role } => {
+                    if role == crate::id::id(0) {
+                        anyhow::bail!("Cannot delete everyone role");
+                    }
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
                         if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
@@ -1191,37 +1352,24 @@ pub async fn handle_event(
                             anyhow::bail!("Not in voice channel");
                         }
 
-                        let (was_created, party_snapshot) = match watch_party {
+                        match watch_party {
                             None => {
-                                let party = WatchParty {
+                                *watch_party = Some(WatchParty {
                                     host: message.from,
                                     users: HashSet::from([message.from]),
                                     ..Default::default()
-                                };
-                                let snapshot = party.clone();
-                                *watch_party = Some(party);
-                                (true, snapshot)
+                                });
                             }
                             Some(party) => {
                                 party.users.insert(message.from);
-                                (false, party.clone())
                             }
-                        };
-
-                        let ack_data = if was_created {
-                            Ack::CreatedParty(message.to)
-                        } else {
-                            Ack::JoinedParty {
-                                channel: message.to,
-                                state: party_snapshot,
-                            }
-                        };
+                        }
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: ack_data,
+                            data: Ack::JoinedParty,
                             ..Message::default()
                         };
 
@@ -1249,28 +1397,21 @@ pub async fn handle_event(
 
                         party.users.remove(&message.from);
 
-                        let new_host = if party.users.is_empty() {
+                        if party.users.is_empty() {
                             *watch_party = None;
-                            None
-                        } else {
-                            if party.host == message.from {
-                                party.host = *party
-                                    .users
-                                    .iter()
-                                    .min()
-                                    .expect("Users list is guaranteed to be non-empty");
-                            }
-                            Some(party.host)
-                        };
+                        } else if party.host == message.from {
+                            party.host = *party
+                                .users
+                                .iter()
+                                .min()
+                                .expect("Users list is guaranteed to be non-empty");
+                        }
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: Ack::LeftParty {
-                                channel: message.to,
-                                new_host,
-                            },
+                            data: Ack::LeftParty,
                             ..Message::default()
                         };
 
@@ -1300,53 +1441,15 @@ pub async fn handle_event(
                             anyhow::bail!("You are not the host");
                         }
 
-                        if video_id == id(0) || video_id == watch_party.video {
-                            anyhow::bail!("Invalid video id");
-                        }
-
                         watch_party.video = video_id;
+                        watch_party.offset = 0.0;
+                        watch_party.playing = false;
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: Ack::Watching(video_id),
-                            ..Message::default()
-                        };
-
-                        let group = group.downgrade();
-
-                        group.notify(ack, &state);
-                    }
-                }
-
-                Event::UnWatch => {
-                    let _lock = state.group_locks.write(group_id).await;
-
-                    if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        let Some(channel) = group.channels.get_mut(&message.to) else {
-                            anyhow::bail!("Channel not found");
-                        };
-
-                        let ChannelType::Voice {
-                            watch_party: Some(ref mut watch_party),
-                            ..
-                        } = channel.r#type
-                        else {
-                            anyhow::bail!("Party not found");
-                        };
-
-                        if watch_party.host != message.from {
-                            anyhow::bail!("You are not the host");
-                        }
-
-                        watch_party.video = id(0);
-
-                        let ack = Message {
-                            id: message.id,
-                            from: group_id,
-                            to: message.from,
-                            data: Ack::UnWatched,
+                            data: Ack::Watching { video: video_id },
                             ..Message::default()
                         };
 
@@ -1372,8 +1475,8 @@ pub async fn handle_event(
                             anyhow::bail!("Party not found");
                         };
 
-                        if !watch_party.users.contains(&message.from) {
-                            anyhow::bail!("User is not in the party");
+                        if watch_party.host != message.from {
+                            anyhow::bail!("You are not the host");
                         }
 
                         if watch_party.video == id(0) {

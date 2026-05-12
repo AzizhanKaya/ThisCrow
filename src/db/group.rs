@@ -4,6 +4,14 @@ use crate::state::{
     self,
     group::{Channel, ChannelType, Member, OverrideTarget, PermissionOverride, Permissions, Role},
 };
+
+fn override_target_ids(target: &OverrideTarget) -> (Option<i32>, Option<i32>) {
+    match target {
+        OverrideTarget::Role(rid) if **rid == 0 => (None, None),
+        OverrideTarget::Role(rid) => (Some(**rid), None),
+        OverrideTarget::User(uid) => (None, Some(**uid)),
+    }
+}
 use anyhow::Result;
 use sqlx::{Pool, Postgres};
 
@@ -21,7 +29,7 @@ pub struct Group {
 
 pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Group, sqlx::Error> {
     let group = sqlx::query!(
-        r#"SELECT id, icon, name, created_by FROM groups WHERE id = $1"#,
+        r#"SELECT id, icon, name, created_by, everyone_permissions FROM groups WHERE id = $1"#,
         *group_id
     )
     .fetch_one(pool)
@@ -71,12 +79,11 @@ pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Gr
     .fold(
         HashMap::<i32, Vec<PermissionOverride>>::new(),
         |mut acc, row| {
-            let target = if let Some(r_id) = row.role_id {
-                OverrideTarget::Role(id::from(r_id))
-            } else if let Some(u_id) = row.user_id {
-                OverrideTarget::User(id::from(u_id))
-            } else {
-                return acc;
+            let target = match (row.role_id, row.user_id) {
+                (Some(r_id), None) => OverrideTarget::Role(id::from(r_id)),
+                (None, Some(u_id)) => OverrideTarget::User(id::from(u_id)),
+                (None, None) => OverrideTarget::Role(id::from(0)),
+                _ => return acc,
             };
 
             acc.entry(row.channel_id)
@@ -151,14 +158,14 @@ pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Gr
     .collect();
 
     Ok(state::Group::new(
-        id::from(group.id),
+        group_id,
         group.icon,
         group.name,
-        group_id,
         id::from(group.created_by),
         members,
         roles,
         channels,
+        Permissions::from_bits_truncate(group.everyone_permissions as u64),
         HashSet::new(),
     ))
 }
@@ -172,17 +179,33 @@ pub async fn create_group(
 ) -> Result<id, sqlx::Error> {
     sqlx::query_scalar!(
         r#"
-        INSERT INTO groups (name, icon, description, created_by)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO groups (name, icon, description, created_by, everyone_permissions)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id as "id: id"
         "#,
         name,
         icon,
         description,
-        *creator_id
+        *creator_id,
+        Permissions::DEFAULT_EVERYONE.bits() as i64
     )
     .fetch_one(pool)
     .await
+}
+
+pub async fn update_everyone_permissions(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    permissions: u64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"UPDATE groups SET everyone_permissions = $1 WHERE id = $2"#,
+        permissions as i64,
+        *group_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn update_group(
@@ -336,6 +359,75 @@ pub async fn update_channel(
     .await?;
 
     tx.commit().await?;
+
+    Ok(())
+}
+
+pub async fn set_permission_override(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    channel_id: id,
+    target: &OverrideTarget,
+    allow: u64,
+    deny: u64,
+) -> Result<(), sqlx::Error> {
+    let (role_id, user_id) = override_target_ids(target);
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query!(
+        r#"
+        DELETE FROM permission_overrides
+        WHERE channel_id = $1
+          AND role_id IS NOT DISTINCT FROM $2
+          AND user_id IS NOT DISTINCT FROM $3
+        "#,
+        *channel_id,
+        role_id,
+        user_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO permission_overrides (group_id, channel_id, role_id, user_id, allow, deny)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+        *group_id,
+        *channel_id,
+        role_id,
+        user_id,
+        allow as i32,
+        deny as i32,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn delete_permission_override(
+    pool: &Pool<Postgres>,
+    channel_id: id,
+    target: &OverrideTarget,
+) -> Result<(), sqlx::Error> {
+    let (role_id, user_id) = override_target_ids(target);
+
+    sqlx::query!(
+        r#"
+        DELETE FROM permission_overrides
+        WHERE channel_id = $1
+          AND role_id IS NOT DISTINCT FROM $2
+          AND user_id IS NOT DISTINCT FROM $3
+        "#,
+        *channel_id,
+        role_id,
+        user_id,
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -519,6 +611,59 @@ pub async fn add_member(
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+pub async fn update_group_user_position(
+    pool: &Pool<Postgres>,
+    user_id: id,
+    group_id: id,
+    new_position: i16,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let old_pos = sqlx::query_scalar!(
+        r#"SELECT position FROM group_users WHERE user_id = $1 AND group_id = $2"#,
+        *user_id,
+        *group_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if new_position > old_pos {
+        sqlx::query!(
+            r#"UPDATE group_users SET position = position - 1
+               WHERE user_id = $1 AND group_id != $2 AND position > $3 AND position <= $4"#,
+            *user_id,
+            *group_id,
+            old_pos,
+            new_position
+        )
+        .execute(&mut *tx)
+        .await?;
+    } else if new_position < old_pos {
+        sqlx::query!(
+            r#"UPDATE group_users SET position = position + 1
+               WHERE user_id = $1 AND group_id != $2 AND position >= $3 AND position < $4"#,
+            *user_id,
+            *group_id,
+            new_position,
+            old_pos
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query!(
+        r#"UPDATE group_users SET position = $1 WHERE user_id = $2 AND group_id = $3"#,
+        new_position,
+        *user_id,
+        *group_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 

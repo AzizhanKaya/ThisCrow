@@ -1,5 +1,4 @@
 use crate::State;
-
 use crate::db;
 use crate::id::id;
 use crate::message::Ack;
@@ -475,25 +474,22 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
                     anyhow::bail!("Channel not found");
                 };
 
-                let mut party_event: Option<Option<id>> = None;
+                let mut party_left = false;
 
                 if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
                     users.remove(&user_id);
 
                     if let Some(party) = watch_party.as_mut() {
                         if party.users.remove(&user_id) {
+                            party_left = true;
                             if party.users.is_empty() {
                                 *watch_party = None;
-                                party_event = Some(None);
-                            } else {
-                                if party.host == user_id {
-                                    party.host = *party
-                                        .users
-                                        .iter()
-                                        .min()
-                                        .expect("Users list is guaranteed to be non-empty");
-                                }
-                                party_event = Some(Some(party.host));
+                            } else if party.host == user_id {
+                                party.host = *party
+                                    .users
+                                    .iter()
+                                    .min()
+                                    .expect("Users list is guaranteed to be non-empty");
                             }
                         }
                     }
@@ -512,16 +508,13 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
                     &state,
                 );
 
-                if let Some(new_host) = party_event {
+                if party_left {
                     group.notify(
                         Message {
                             id: state.snowflake.generate(),
                             from: group_id,
                             to: user_id,
-                            data: Ack::LeftParty {
-                                channel: channel_id,
-                                new_host,
-                            },
+                            data: Ack::LeftParty,
                             ..Default::default()
                         },
                         &state,

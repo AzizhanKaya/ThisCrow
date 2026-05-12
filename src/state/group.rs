@@ -43,6 +43,27 @@ bitflags! {
     }
 }
 
+impl Permissions {
+    pub const DEFAULT_EVERYONE: Permissions = Permissions::from_bits_truncate(
+        Permissions::VIEW_CHANNEL.bits()
+            | Permissions::VIEW_MESSAGES.bits()
+            | Permissions::SEND_MESSAGE.bits()
+            | Permissions::READ_MESSAGE_HISTORY.bits()
+            | Permissions::EMBED_LINKS.bits()
+            | Permissions::ATTACH_FILES.bits()
+            | Permissions::CONNECT.bits()
+            | Permissions::SPEAK.bits()
+            | Permissions::CREATE_INVITE.bits(),
+    );
+}
+
+fn serialize_permissions_bits<S: serde::Serializer>(
+    perms: &Permissions,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u64(perms.bits())
+}
+
 type id = Id::id;
 type UserId = id;
 type RoleId = id;
@@ -53,11 +74,12 @@ pub struct Group {
     pub id: id,
     pub icon: Option<String>,
     pub name: String,
-    pub version: id,
     pub owner: id,
     pub members: HashMap<UserId, Member>,
     pub roles: HashMap<RoleId, Role>,
     pub channels: HashMap<ChannelId, Channel>,
+    #[serde(serialize_with = "serialize_permissions_bits")]
+    pub everyone: Permissions,
     #[serde(skip)]
     pub subscribers: HashSet<UserId>,
 }
@@ -87,8 +109,7 @@ pub struct Channel {
     position: usize,
     #[serde(flatten)]
     pub r#type: ChannelType,
-    #[serde(skip)]
-    permission_overrides: Vec<PermissionOverride>,
+    pub permission_overrides: Vec<PermissionOverride>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -110,14 +131,17 @@ pub struct WatchParty {
     pub playing: bool,
 }
 
-#[derive(Clone, Constructor)]
+#[derive(Serialize, Clone, Constructor)]
 pub struct PermissionOverride {
-    target: OverrideTarget,
-    allow: Permissions,
-    deny: Permissions,
+    pub target: OverrideTarget,
+    #[serde(serialize_with = "serialize_permissions_bits")]
+    pub allow: Permissions,
+    #[serde(serialize_with = "serialize_permissions_bits")]
+    pub deny: Permissions,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum OverrideTarget {
     Role(RoleId),
     User(UserId),
@@ -133,7 +157,7 @@ impl Group {
             return Permissions::empty();
         };
 
-        let mut perms = Permissions::empty();
+        let mut perms = self.everyone;
         for role_id in &user.roles {
             if let Some(role) = self.roles.get(role_id) {
                 perms |= role.permissions;
@@ -151,7 +175,7 @@ impl Group {
 
                 for ovr in &channel.permission_overrides {
                     if let OverrideTarget::Role(rid) = ovr.target {
-                        if user.roles.contains(&rid) {
+                        if rid == Id::id(0) || user.roles.contains(&rid) {
                             role_deny |= ovr.deny;
                             role_allow |= ovr.allow;
                         }
@@ -179,15 +203,6 @@ impl Group {
         }
 
         perms
-    }
-
-    fn next_version(&mut self) -> id {
-        self.version += 1;
-        self.version
-    }
-
-    pub fn get_version(&self) -> id {
-        self.version
     }
 
     pub fn subscribe(&mut self, user_id: id) -> bool {
@@ -255,7 +270,6 @@ impl Group {
         if let Some(i) = icon {
             self.icon = Some(i);
         }
-        self.next_version();
     }
 
     // ===== CHANNEL =====
@@ -286,7 +300,6 @@ impl Group {
         };
 
         self.channels.insert(channel_id, channel);
-        self.next_version();
 
         position
     }
@@ -318,14 +331,48 @@ impl Group {
             if let Some(p) = position {
                 channel.position = p;
             }
-            self.next_version();
         }
     }
 
     pub fn delete_channel(&mut self, channel_id: ChannelId) {
-        if self.channels.remove(&channel_id).is_some() {
-            self.next_version();
+        if self.channels.remove(&channel_id).is_some() {}
+    }
+
+    pub fn set_permission_override(
+        &mut self,
+        channel_id: ChannelId,
+        target: OverrideTarget,
+        allow: Permissions,
+        deny: Permissions,
+    ) {
+        if let Some(channel) = self.channels.get_mut(&channel_id) {
+            if let Some(existing) = channel
+                .permission_overrides
+                .iter_mut()
+                .find(|o| o.target == target)
+            {
+                existing.allow = allow;
+                existing.deny = deny;
+            } else {
+                channel
+                    .permission_overrides
+                    .push(PermissionOverride::new(target, allow, deny));
+            }
         }
+    }
+
+    pub fn remove_permission_override(
+        &mut self,
+        channel_id: ChannelId,
+        target: &OverrideTarget,
+    ) {
+        if let Some(channel) = self.channels.get_mut(&channel_id) {
+            channel.permission_overrides.retain(|o| o.target != *target);
+        }
+    }
+
+    pub fn update_everyone(&mut self, permissions: Permissions) {
+        self.everyone = permissions;
     }
 
     // ===== ROLE =====
@@ -345,7 +392,6 @@ impl Group {
             position,
         };
         self.roles.insert(role_id, role);
-        self.next_version();
     }
 
     pub fn update_role(
@@ -381,7 +427,6 @@ impl Group {
             if let Some(p) = permissions {
                 role.permissions = p;
             }
-            self.next_version();
         }
     }
 
@@ -390,7 +435,6 @@ impl Group {
             self.members.iter_mut().for_each(|(_, u)| {
                 u.roles.retain(|&r| r != role_id);
             });
-            self.next_version();
         }
     }
 
@@ -398,7 +442,6 @@ impl Group {
         if self.roles.contains_key(&role_id) {
             if let Some(u) = self.members.get_mut(&user_id_param) {
                 u.roles.push(role_id);
-                self.next_version();
             }
         }
     }
@@ -406,7 +449,6 @@ impl Group {
     pub fn remove_role(&mut self, user_id_param: UserId, role_id: RoleId) {
         if let Some(u) = self.members.get_mut(&user_id_param) {
             u.roles.retain(|&r| r != role_id);
-            self.next_version();
         }
     }
 }

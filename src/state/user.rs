@@ -1,6 +1,6 @@
 use crate::{
     id::id,
-    message::{Event, Message, dispatch, snowflake::snowflake_id},
+    message::{Event, Message, NotifyCollectionExt, snowflake::snowflake_id},
     msgpack,
 };
 use bytes::Bytes;
@@ -92,14 +92,8 @@ pub struct Voice {
 
 #[derive(Clone, Debug, Serialize)]
 pub enum VoiceType {
-    Direct {
-        user: id,
-        message_id: snowflake_id,
-    },
-    Channel {
-        group_id: id,
-        channel_id: id,
-    },
+    Direct { user: id, message_id: snowflake_id },
+    Channel { group_id: id, channel_id: id },
 }
 
 impl Session {
@@ -148,6 +142,6 @@ impl Session {
             .copied()
             .collect();
 
-        dispatch::send_message_all(&state, message, all_users.into_iter());
+        all_users.notify(message, state);
     }
 }

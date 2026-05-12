@@ -2,7 +2,9 @@ use crate::db;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::create_jwt};
 use actix_web::{
-    Error, HttpResponse, cookie::Cookie, cookie::time::Duration as CookieDuration, error, web,
+    Error, HttpResponse,
+    cookie::{Cookie, SameSite, time::Duration as CookieDuration},
+    error, web,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -45,6 +47,8 @@ async fn login(login: MsgPack<Login>, state: State) -> Result<HttpResponse, Erro
                 Cookie::build("session", &token)
                     .path("/")
                     .http_only(true)
+                    .secure(true)
+                    .same_site(SameSite::None)
                     .max_age(CookieDuration::days(1))
                     .finish(),
             )
@@ -101,6 +105,8 @@ async fn register(register: MsgPack<Register>, state: State) -> Result<HttpRespo
                 Cookie::build("session", &token)
                     .path("/")
                     .http_only(true)
+                    .secure(true)
+                    .same_site(SameSite::None)
                     .max_age(CookieDuration::days(1))
                     .finish(),
             )
@@ -170,6 +176,8 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
             Cookie::build("session", &token)
                 .path("/")
                 .http_only(true)
+                .secure(true)
+                .same_site(SameSite::None)
                 .max_age(CookieDuration::days(1))
                 .finish(),
         )

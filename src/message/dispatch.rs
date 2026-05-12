@@ -1,6 +1,7 @@
 use super::ack::Ack;
 use crate::db::message::StoredMessage;
 use crate::id::id;
+use crate::message::NotifyIterExt;
 use crate::message::{Data, Event, Message, MessageType};
 use crate::state::group::Permissions;
 use crate::{State, msgpack};
@@ -60,8 +61,6 @@ pub async fn handle_bytes(
             anyhow::bail!("Invalid event id");
         }
 
-        println!("{:?}", event);
-
         event_tx.send((connection_id, event))?;
 
         return Ok(());
@@ -107,22 +106,6 @@ pub fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     }
 }
 
-pub fn send_message_all<T: Serialize>(
-    state: &State,
-    message: Message<T>,
-    user_ids: impl Iterator<Item = id>,
-) {
-    let message = Bytes::from(msgpack!(message));
-
-    user_ids
-        .filter_map(|user_id| state.users.get(&user_id))
-        .for_each(|user| {
-            for connection in user.connections.iter() {
-                connection.writer.send(message.clone());
-            }
-        });
-}
-
 fn send_group_message<T: Serialize>(state: &State, message: Message<T>, group_id: id) {
     let Some(group) = state.groups.get(&group_id) else {
         return;
@@ -130,15 +113,12 @@ fn send_group_message<T: Serialize>(state: &State, message: Message<T>, group_id
 
     let channel_id = message.to;
 
-    let user_ids = group
+    group
         .subscribers
         .iter()
         .filter(|&&user_id| {
             let perms = group.compute_permissions(user_id, Some(channel_id));
-
             perms.contains(Permissions::VIEW_MESSAGES)
         })
-        .copied();
-
-    send_message_all(state, message, user_ids);
+        .notify(message, state);
 }
