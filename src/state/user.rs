@@ -32,6 +32,7 @@ pub struct State {
     pub friend_requests_sent: Vec<id>,
     pub dms: HashSet<id>,
     pub groups: Vec<id>,
+    pub blocked: HashSet<id>,
     pub activities: Vec<Activity>,
     pub voice: Option<Voice>,
     pub on_voice_direct: HashSet<id>,

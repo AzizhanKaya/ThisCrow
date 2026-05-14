@@ -49,7 +49,19 @@ pub async fn handle_bytes(
             }
         }
 
-        dispatch_message(state, message).await;
+        let message_id = message.id;
+
+        if let Err(e) = dispatch_message(state, message).await {
+            if let Some(user) = state.users.get(&user_id) {
+                let error = Message {
+                    id: message_id,
+                    data: Ack::Error(e.to_string()),
+                    to: user_id,
+                    ..Default::default()
+                };
+                user.send_message(error);
+            }
+        }
 
         return Ok(());
     }
@@ -74,17 +86,53 @@ pub async fn handle_bytes(
     anyhow::bail!("Unkown message struct: {:?}", value);
 }
 
-async fn dispatch_message<T: Serialize + Clone>(state: &State, message: Message<T>) -> Result<()> {
-    if matches!(message.r#type, MessageType::Direct | MessageType::Group(_)) {
-        let message: StoredMessage = message.clone().try_into()?;
-        state.messages.write(message).await?;
-    }
-
+async fn dispatch_message(state: &State, message: Message<Data>) -> Result<()> {
     match message.r#type {
-        MessageType::Direct | MessageType::Info => {
+        MessageType::Direct => {
+            let stored: StoredMessage = message.clone().try_into()?;
+
+            let sender_blocked_receiver = state
+                .blocks
+                .get(&message.from)
+                .map_or(false, |blocked| blocked.contains(&message.to));
+
+            let receiver_blocked_sender = state
+                .blocks
+                .get(&message.to)
+                .map_or(false, |blocked| blocked.contains(&message.from));
+
+            if sender_blocked_receiver || receiver_blocked_sender {
+                anyhow::bail!("You can't message a blocked user");
+            }
+
+            state.messages.write(stored).await?;
             send_message(state, message);
         }
-        MessageType::Group(group_id) | MessageType::InfoGroup(group_id) => {
+
+        MessageType::Group(group_id) => {
+            let Some(group) = state.groups.get(&group_id) else {
+                anyhow::bail!("Group not found")
+            };
+
+            if !group
+                .compute_permissions(message.from, Some(message.to))
+                .contains(Permissions::SEND_MESSAGE)
+            {
+                anyhow::bail!("You don't have permission to send messages");
+            }
+
+            if matches!(message.data, Data::MultiData(_)) {
+                if !group
+                    .compute_permissions(message.from, Some(message.to))
+                    .contains(Permissions::ATTACH_FILES)
+                {
+                    anyhow::bail!("You don't have permission to attach files");
+                }
+            }
+
+            let stored: StoredMessage = message.clone().try_into()?;
+            state.messages.write(stored).await?;
+
             send_group_message(state, message, group_id);
         }
         _ => {}

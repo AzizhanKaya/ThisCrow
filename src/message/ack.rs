@@ -39,6 +39,7 @@ pub enum Ack {
     Unsubscribed,
     JoinedMember,
     LeftMember,
+    UserLeft,
     CreatedGroup {
         name: String,
         icon: Option<String>,

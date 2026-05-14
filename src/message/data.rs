@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+use crate::message::snowflake::snowflake_id;
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde_with::skip_serializing_none]
 pub struct MultiData {
@@ -54,6 +56,10 @@ pub enum Data {
     Call {
         #[serde(deserialize_with = "require_option")]
         end_time: Option<f64>,
+    },
+    Reply {
+        replied: snowflake_id,
+        data: MultiData,
     },
 }
 

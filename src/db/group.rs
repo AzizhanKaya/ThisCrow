@@ -157,6 +157,16 @@ pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Gr
     .map(|(uid, (name, roles))| (uid, Member::new(uid, name, roles)))
     .collect();
 
+    let bans: HashSet<id> = sqlx::query_scalar!(
+        r#"SELECT user_id FROM group_bans WHERE group_id = $1"#,
+        *group_id,
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(id::from)
+    .collect();
+
     Ok(state::Group::new(
         group_id,
         group.icon,
@@ -167,6 +177,7 @@ pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Gr
         channels,
         Permissions::from_bits_truncate(group.everyone_permissions as u64),
         HashSet::new(),
+        bans,
     ))
 }
 
@@ -229,6 +240,16 @@ pub async fn update_group(
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+pub async fn delete_group(pool: &Pool<Postgres>, group_id: id) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"DELETE FROM groups WHERE id = $1"#,
+        *group_id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -665,6 +686,122 @@ pub async fn update_group_user_position(
 
     tx.commit().await?;
     Ok(())
+}
+
+pub async fn remove_member(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    user_id: id,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"DELETE FROM group_users WHERE group_id = $1 AND user_id = $2"#,
+        *group_id,
+        *user_id,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/* ===== BANS ===== */
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct BannedUser {
+    pub id: id,
+    pub username: String,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub banned_by: Option<id>,
+    pub banned_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub async fn ban_user(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    user_id: id,
+    banned_by: id,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query!(
+        r#"DELETE FROM group_users WHERE group_id = $1 AND user_id = $2"#,
+        *group_id,
+        *user_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO group_bans (group_id, user_id, banned_by)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (group_id, user_id) DO NOTHING
+        "#,
+        *group_id,
+        *user_id,
+        *banned_by,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn unban_user(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    user_id: id,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"DELETE FROM group_bans WHERE group_id = $1 AND user_id = $2"#,
+        *group_id,
+        *user_id,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn is_banned(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    user_id: id,
+) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM group_bans WHERE group_id = $1 AND user_id = $2)"#,
+        *group_id,
+        *user_id,
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or(false);
+
+    Ok(exists)
+}
+
+pub async fn get_bans(pool: &Pool<Postgres>, group_id: id) -> Result<Vec<BannedUser>, sqlx::Error> {
+    sqlx::query_as!(
+        BannedUser,
+        r#"
+        SELECT
+            u.id        AS "id: id",
+            u.username,
+            u.name,
+            u.avatar,
+            b.banned_by AS "banned_by: id",
+            b.banned_at
+        FROM group_bans b
+        JOIN users u ON u.id = b.user_id
+        WHERE b.group_id = $1
+        ORDER BY b.banned_at DESC
+        "#,
+        *group_id,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn get_members(pool: &Pool<Postgres>, group_id: id) -> Result<Vec<id>, sqlx::Error> {

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod group;
 pub mod info;
 pub mod invitation;
 pub mod message;

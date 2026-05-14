@@ -2,11 +2,13 @@ use crate::db::{self};
 use crate::id::id;
 use crate::message::data::Data;
 use crate::message::{Ack, MessageType};
+use crate::msgpack;
 use crate::state::group::{ChannelType, Group, OverrideTarget};
 use crate::state::group::{Permissions, WatchParty};
 use crate::state::user::{self, Voice, VoiceType};
 use crate::{State, message::Message};
 use anyhow::Result;
+use bytes::Bytes;
 use dashmap::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -701,8 +703,6 @@ pub async fn handle_event(
                         if group.get().subscribers.is_empty() {
                             group.remove();
                         }
-                    } else {
-                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -770,6 +770,55 @@ pub async fn handle_event(
                         let group = group.downgrade();
 
                         group.notify_all(ack, &state);
+                    }
+                }
+
+                Event::DeleteGroup => {
+                    let owner = state
+                        .groups
+                        .get(&group_id)
+                        .map(|g| g.owner)
+                        .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
+
+                    if message.from != owner {
+                        anyhow::bail!("Only the owner can delete the group");
+                    }
+
+                    let ack = Bytes::from(msgpack!(Message {
+                        id: message.id,
+                        from: group_id,
+                        to: group_id,
+                        data: Ack::DeletedGroup,
+                        ..Message::default()
+                    }));
+
+                    db::group::delete_group(&state.pool, group_id).await?;
+
+                    if let Entry::Occupied(group) = state.groups.entry(group_id) {
+                        let group = group.remove();
+
+                        for uid in group.members.keys() {
+                            if let Some(mut user) = state.users.get_mut(&uid) {
+                                user.state.groups.retain(|g| *g != group_id);
+
+                                if matches!(
+                                    user.state.voice,
+                                    Some(Voice {
+                                        r#type: VoiceType::Channel {
+                                            group_id: voice_group_id,
+                                            ..
+                                        },
+                                        ..
+                                    }) if voice_group_id == group_id
+                                ) {
+                                    user.state.voice = None;
+                                }
+
+                                user.send_bytes(ack.clone());
+                            }
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
                     }
                 }
 
@@ -1095,6 +1144,67 @@ pub async fn handle_event(
                 }
 
                 /* ===== MEMBER ===== */
+                Event::KickUser => {
+                    let target = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        if target == group.owner {
+                            anyhow::bail!("Cannot kick the owner");
+                        }
+                        if target == message.from {
+                            anyhow::bail!("Cannot kick yourself");
+                        }
+                        let perms = group.compute_permissions(message.from, None);
+                        if !perms.intersects(Permissions::KICK_MEMBERS | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to kick");
+                        }
+                        if !group.members.contains_key(&target) {
+                            anyhow::bail!("Target is not a member");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::remove_member(&state.pool, group_id, target).await?;
+
+                    finalize_user_removal(state, group_id, target, message.id, false);
+                }
+
+                Event::BanUser => {
+                    let target = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        if target == group.owner {
+                            anyhow::bail!("Cannot ban the owner");
+                        }
+                        if target == message.from {
+                            anyhow::bail!("Cannot ban yourself");
+                        }
+                        let perms = group.compute_permissions(message.from, None);
+                        if !perms.intersects(Permissions::BAN_MEMBERS | Permissions::ADMINISTRATOR)
+                        {
+                            anyhow::bail!("Unauthorized to ban");
+                        }
+                        if !group.members.contains_key(&target) {
+                            anyhow::bail!("Target is not a member");
+                        }
+                        let target_perms = group.compute_permissions(target, None);
+                        if target_perms.contains(Permissions::ADMINISTRATOR) {
+                            anyhow::bail!("Cannot ban another administrator");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::ban_user(&state.pool, group_id, target, message.from).await?;
+
+                    finalize_user_removal(state, group_id, target, message.id, true);
+                }
 
                 /* ===== ROLE ===== */
                 Event::CreateRole {
@@ -1506,4 +1616,42 @@ pub async fn handle_event(
         }
     }
     Ok(())
+}
+
+fn finalize_user_removal(
+    state: &State,
+    group_id: id,
+    target: id,
+    message_id: crate::message::snowflake::snowflake_id,
+    banned: bool,
+) {
+    let ack = Message {
+        id: message_id,
+        from: group_id,
+        to: target,
+        data: Ack::UserLeft,
+        ..Message::default()
+    };
+
+    if let Some(mut user) = state.users.get_mut(&target) {
+        user.state.groups.retain(|g| *g != group_id);
+        if let Some(voice) = user.state.voice.as_ref() {
+            if matches!(
+                voice.r#type,
+                VoiceType::Channel { group_id: vg, .. } if vg == group_id
+            ) {
+                user.state.voice = None;
+            }
+        }
+        user.send_message(ack.clone());
+    }
+
+    if let Some(mut group) = state.groups.get_mut(&group_id) {
+        group.remove_member(target);
+        if banned {
+            group.add_ban(target);
+        }
+        let group = group.downgrade();
+        group.notify(ack, &state);
+    }
 }

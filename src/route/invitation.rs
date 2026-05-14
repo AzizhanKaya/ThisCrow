@@ -85,6 +85,17 @@ async fn join_invitation(
         }
     }
 
+    let banned = db::group::is_banned(&state.pool, invitation.group_id, user.id)
+        .await
+        .map_err(|e| {
+            log::error!("Error while checking ban status: {}", e);
+            error::ErrorInternalServerError("Error while checking ban status")
+        })?;
+
+    if banned {
+        return Err(error::ErrorForbidden("You are banned from this group"));
+    }
+
     db::group::add_member(&state.pool, user.id, invitation.group_id)
         .await
         .map_err(|_| error::ErrorConflict("You are already a member of this group"))?;

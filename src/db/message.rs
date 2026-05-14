@@ -2,11 +2,11 @@ use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::message::{Data, Message, MessageType};
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
+
 pub type RocksDB = DBWithThreadMode<MultiThreaded>;
 
 const CF_MESSAGES: &str = "messages";
@@ -22,8 +22,7 @@ pub struct StoredMessage {
     pub data: Data,
     pub group_id: Option<id>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub overwrited: Option<()>,
+    pub overwrited: Option<bool>,
 }
 
 impl From<StoredMessage> for Message<Data> {
@@ -211,32 +210,12 @@ impl MessageStore {
         Ok(())
     }
 
-    fn box_to_i64(value: &[u8]) -> Option<i64> {
-        if value.len() == 8 {
-            let arr: [u8; 8] = value.try_into().ok()?;
-            Some(i64::from_be_bytes(arr))
-        } else {
-            None
-        }
-    }
-
-    fn datetime_to_min_snowflake(dt: &DateTime<Utc>) -> u64 {
-        let snowflake: snowflake_id = (*dt).into();
-        snowflake.0
-    }
-
-    fn datetime_to_max_snowflake(dt: &DateTime<Utc>) -> u64 {
-        let snowflake: snowflake_id = (*dt).into();
-        snowflake.0 | 0xFFFFF
-    }
-
     pub async fn get_direct_messages(
         &self,
         from: id,
         to: id,
         len: Option<i64>,
-        start: Option<DateTime<Utc>>,
-        end: DateTime<Utc>,
+        before: Option<snowflake_id>,
     ) -> Result<Vec<StoredMessage>> {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
@@ -254,16 +233,12 @@ impl MessageStore {
             prefix[0..4].copy_from_slice(&user1.to_be_bytes());
             prefix[4..8].copy_from_slice(&user2.to_be_bytes());
 
-            let end_snowflake = Self::datetime_to_max_snowflake(&end);
-            let end_limit = Self::datetime_to_min_snowflake(&end);
-
-            let start_snowflake = start
-                .map(|s| Self::datetime_to_min_snowflake(&s))
-                .unwrap_or(0);
+            let before_id = before.map(|s| s.0).unwrap_or(u64::MAX);
+            let seek_id = before_id.saturating_sub(1);
 
             let mut seek_key = [0u8; 16];
             seek_key[0..8].copy_from_slice(&prefix);
-            seek_key[8..16].copy_from_slice(&end_snowflake.to_be_bytes());
+            seek_key[8..16].copy_from_slice(&seek_id.to_be_bytes());
 
             let iter = db.iterator_cf(
                 &cf_dm,
@@ -281,15 +256,6 @@ impl MessageStore {
 
                 if key.len() == 16 {
                     let message_id_bytes: [u8; 8] = key[8..16].try_into().unwrap();
-                    let message_id_val = u64::from_be_bytes(message_id_bytes);
-
-                    if message_id_val >= end_limit {
-                        continue;
-                    }
-
-                    if message_id_val < start_snowflake {
-                        break;
-                    }
 
                     if let Some(message_bytes) = db
                         .get_cf(&cf_messages, message_id_bytes)
@@ -316,8 +282,7 @@ impl MessageStore {
         &self,
         channel_id: id,
         len: Option<i64>,
-        start: Option<DateTime<Utc>>,
-        end: DateTime<Utc>,
+        before: Option<snowflake_id>,
     ) -> Result<Vec<StoredMessage>> {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
@@ -332,14 +297,12 @@ impl MessageStore {
             let mut prefix = [0u8; 4];
             prefix[0..4].copy_from_slice(&channel_id.to_be_bytes());
 
-            let end_snowflake = Self::datetime_to_max_snowflake(&end);
-            let start_snowflake = start
-                .map(|s| Self::datetime_to_min_snowflake(&s))
-                .unwrap_or(0);
+            let before_id = before.map(|s| s.0).unwrap_or(u64::MAX);
+            let seek_id = before_id.saturating_sub(1);
 
             let mut seek_key = [0u8; 12];
             seek_key[0..4].copy_from_slice(&prefix);
-            seek_key[4..12].copy_from_slice(&end_snowflake.to_be_bytes());
+            seek_key[4..12].copy_from_slice(&seek_id.to_be_bytes());
 
             let iter = db.iterator_cf(
                 &cf_channel,
@@ -357,11 +320,6 @@ impl MessageStore {
 
                 if key.len() == 12 {
                     let message_id_bytes: [u8; 8] = key[4..12].try_into().unwrap();
-                    let message_id_val = u64::from_be_bytes(message_id_bytes);
-
-                    if message_id_val < start_snowflake {
-                        break;
-                    }
 
                     if let Some(message_bytes) = db
                         .get_cf(&cf_messages, message_id_bytes)

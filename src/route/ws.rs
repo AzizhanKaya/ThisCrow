@@ -35,13 +35,7 @@ use tungstenite::protocol::WebSocketConfig;
 
 pub async fn listen(port: u16, state: State) -> Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
-    socket.set_reuse_port(true)?;
     socket.set_reuse_address(true)?;
-
-    let tcp_buffer_size = 1024;
-
-    socket.set_recv_buffer_size(tcp_buffer_size)?;
-    socket.set_send_buffer_size(tcp_buffer_size)?;
 
     let addr: SocketAddr = SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), port);
     socket.bind(&addr.into())?;
@@ -85,7 +79,7 @@ static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
     WebSocketConfig::default()
         .max_frame_size(Some(16 * 1024))
         .max_message_size(Some(64 * 1024))
-        .write_buffer_size(1024)
+        .write_buffer_size(4 * 1024)
         .accept_unmasked_frames(true)
 });
 
@@ -274,19 +268,10 @@ async fn handle_connection(
             break;
         }
 
-        if message_rx.len() > 100 {
-            log::warn!("Message queue full (>100) for {user_id}, disconnecting.");
+        if message_rx.len() > 500 {
+            log::warn!("Message queue full (>500) for {user_id}, disconnecting.");
             break;
         }
-
-        while let Ok(message) = message_rx.try_recv() {
-            if let Err(e) = send_with_timeout(message, Duration::from_secs(5), &mut stream).await {
-                log::warn!("Failed to send message to {user_id}: {e:?}");
-                break;
-            }
-        }
-
-        let _ = stream.flush().await;
 
         tokio::select! {
             _ = state.shutdown.cancelled() => break,
@@ -320,6 +305,18 @@ async fn handle_connection(
                 }
             }
         }
+
+        while let Ok(message) = message_rx.try_recv() {
+            if let Err(e) = send_with_timeout(message, Duration::from_secs(5), &mut stream).await {
+                log::warn!("Failed to send message to {user_id}: {e:?}");
+                break;
+            }
+        }
+
+        if let Err(e) = stream.flush().await {
+            log::warn!("Failed to flush for {user_id}: {e:?}");
+            break;
+        }
     }
 
     let _ = stream.close(None).await;
@@ -348,11 +345,6 @@ async fn handle_incoming(
         WsMessage::Ping(ping) => {
             if let Err(e) = stream.send(WsMessage::Pong(ping)).await {
                 log::warn!("Failed to send pong to {user_id}: {:?}", e);
-                return false;
-            }
-
-            if let Err(e) = stream.flush().await {
-                log::warn!("Failed to flush pong to {user_id}: {:?}", e);
                 return false;
             }
         }
@@ -446,7 +438,7 @@ async fn disconnect(user_id: id, connection_id: usize, state: State) -> Result<(
             drop(entry);
 
             if let Some(voice) = voice {
-                disconnect_voice(user_id, voice.r#type, &state).await;
+                disconnect_voice(user_id, voice.r#type.clone(), &state).await;
             }
         }
     }
@@ -497,7 +489,7 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
 
                 let group = group.downgrade();
 
-                group.notify_all(
+                group.notify(
                     Message {
                         id: state.snowflake.generate(),
                         from: group_id,
@@ -527,6 +519,11 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
             user: other_user_id,
             message_id: call_message_id,
         } => {
+            state.voice_direct.remove_if_mut(&other_user_id, |_, v| {
+                v.remove(&user_id);
+                v.is_empty()
+            });
+
             if let Some(other_user) = state.users.get(&other_user_id) {
                 let ack = Message {
                     id: state.snowflake.generate(),
@@ -534,12 +531,6 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
                     data: Ack::ExitedVoice(user_id),
                     ..Default::default()
                 };
-
-                state
-                    .voice_direct
-                    .entry(other_user_id)
-                    .or_default()
-                    .remove(&user_id);
 
                 other_user.send_message(ack);
             }

@@ -85,6 +85,7 @@ async fn main() -> std::io::Result<()> {
         users: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         groups: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         voice_direct: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
+        blocks: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         user_locks: LockMap::new(),
         group_locks: LockMap::new(),
         pool,
@@ -164,7 +165,8 @@ async fn main() -> std::io::Result<()> {
                             .configure(route::state::configure)
                             .configure(route::info::configure)
                             .configure(route::message::configure)
-                            .configure(route::invitation::configure),
+                            .configure(route::invitation::configure)
+                            .configure(route::group::configure),
                     )
                     .wrap(Governor::new(&governor)),
             )

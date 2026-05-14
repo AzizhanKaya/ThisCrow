@@ -1,18 +1,17 @@
 use crate::id::id;
+use crate::message::{Ack, Message};
 use crate::message::{Data, snowflake::snowflake_id};
 use crate::state::group::Permissions;
 use crate::{State, db::message::StoredMessage, middleware::JwtUser, msgpack::MsgPack};
 use actix_web::error;
 use actix_web::{Error, error::ErrorInternalServerError, web};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
 pub struct MessagesQuery {
     user_id: id,
     len: Option<i64>,
-    start: Option<DateTime<Utc>>,
-    end: DateTime<Utc>,
+    before: Option<snowflake_id>,
 }
 
 pub async fn get_messages(
@@ -22,7 +21,7 @@ pub async fn get_messages(
 ) -> Result<MsgPack<Vec<StoredMessage>>, Error> {
     let messages = state
         .messages
-        .get_direct_messages(user.id, query.user_id, query.start, query.end, query.len)
+        .get_direct_messages(user.id, query.user_id, query.before, query.len)
         .await
         .map_err(|e| {
             log::error!("Error while getting messages: {:?}", e);
@@ -37,8 +36,7 @@ pub struct ChannelMessagesQuery {
     group_id: id,
     channel_id: id,
     len: Option<i64>,
-    start: Option<DateTime<Utc>>,
-    end: DateTime<Utc>,
+    before: Option<snowflake_id>,
 }
 
 pub async fn get_channel_messages(
@@ -52,14 +50,13 @@ pub async fn get_channel_messages(
         .filter(|group| {
             group
                 .compute_permissions(user.id, Some(query.channel_id))
-                .contains(Permissions::VIEW_MESSAGES)
-                || true
+                .contains(Permissions::VIEW_MESSAGES & Permissions::READ_MESSAGE_HISTORY)
         })
         .ok_or_else(|| error::ErrorUnauthorized("Don't have permissions to view this channel"))?;
 
     let messages = state
         .messages
-        .get_channel_messages(query.channel_id, query.start, query.end, query.len)
+        .get_channel_messages(query.channel_id, query.before, query.len)
         .await
         .map_err(|e| {
             log::error!("Error while getting messages: {:?}", e);
@@ -86,7 +83,7 @@ async fn overwrite_message(
         .await
         .map_err(ErrorInternalServerError)?;
 
-    message.overwrited = Some(());
+    message.overwrited = Some(true);
 
     if message.from != user.id {
         return Err(error::ErrorUnauthorized(
@@ -114,9 +111,30 @@ async fn overwrite_message(
 
     state
         .messages
-        .overwrite(message)
+        .overwrite(message.clone())
         .await
-        .map_err(ErrorInternalServerError)
+        .map_err(ErrorInternalServerError)?;
+
+    let ack = Message {
+        id: state.snowflake.generate(),
+        data: Ack::Overwritten(Box::new(message.clone())),
+        ..Default::default()
+    };
+
+    if let Some(group_id) = message.group_id {
+        if let Some(group) = state.groups.get(&group_id) {
+            group.notify(ack, &state);
+        }
+    } else {
+        if let Some(u) = state.users.get(&message.from) {
+            u.send_message(ack.clone());
+        }
+        if let Some(u) = state.users.get(&message.to) {
+            u.send_message(ack);
+        }
+    }
+
+    Ok(())
 }
 
 async fn delete_message(
@@ -158,7 +176,64 @@ async fn delete_message(
         .messages
         .delete(message.id)
         .await
-        .map_err(ErrorInternalServerError)
+        .map_err(ErrorInternalServerError)?;
+
+    let ack = Message {
+        id: state.snowflake.generate(),
+        data: Ack::Deleted(message.id),
+        ..Default::default()
+    };
+
+    if let Some(group_id) = message.group_id {
+        if let Some(group) = state.groups.get(&group_id) {
+            group.notify(ack, &state);
+        }
+    } else {
+        if let Some(u) = state.users.get(&message.from) {
+            u.send_message(ack.clone());
+        }
+        if let Some(u) = state.users.get(&message.to) {
+            u.send_message(ack);
+        }
+    }
+
+    Ok(())
+}
+
+async fn get_message(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    path: web::Path<snowflake_id>,
+) -> Result<MsgPack<StoredMessage>, Error> {
+    let message_id = path.into_inner();
+
+    let message = state
+        .messages
+        .get(message_id)
+        .await
+        .map_err(|_| error::ErrorNotFound("Message not found"))?;
+
+    if let Some(group_id) = message.group_id {
+        let group = state
+            .groups
+            .get(&group_id)
+            .ok_or_else(|| error::ErrorNotFound("Group not found"))?;
+
+        if !group
+            .compute_permissions(user.id, Some(message.to))
+            .contains(Permissions::VIEW_MESSAGES)
+        {
+            return Err(error::ErrorForbidden(
+                "You don't have permission to view this message",
+            ));
+        }
+    } else if message.from != user.id && message.to != user.id {
+        return Err(error::ErrorForbidden(
+            "You don't have permission to view this message",
+        ));
+    }
+
+    Ok(MsgPack(message))
 }
 
 async fn remove_dm(
@@ -184,6 +259,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/message")
             .route("/direct", web::get().to(get_messages))
             .route("/channel", web::get().to(get_channel_messages))
+            .route("/{id}", web::get().to(get_message))
             .route("/overwrite", web::post().to(overwrite_message))
             .route("/delete", web::post().to(delete_message))
             .route("/remove_dm", web::post().to(remove_dm)),

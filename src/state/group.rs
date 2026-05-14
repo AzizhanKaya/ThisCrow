@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct Permissions: u64 {
         // ─── Core / Admin ───────────────────
         const ADMINISTRATOR        = 1 << 0;
@@ -57,13 +58,6 @@ impl Permissions {
     );
 }
 
-fn serialize_permissions_bits<S: serde::Serializer>(
-    perms: &Permissions,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_u64(perms.bits())
-}
-
 type id = Id::id;
 type UserId = id;
 type RoleId = id;
@@ -78,10 +72,11 @@ pub struct Group {
     pub members: HashMap<UserId, Member>,
     pub roles: HashMap<RoleId, Role>,
     pub channels: HashMap<ChannelId, Channel>,
-    #[serde(serialize_with = "serialize_permissions_bits")]
     pub everyone: Permissions,
     #[serde(skip)]
     pub subscribers: HashSet<UserId>,
+    #[serde(skip)]
+    pub bans: HashSet<UserId>,
 }
 
 #[derive(Serialize, Clone, Constructor, Default)]
@@ -97,7 +92,6 @@ pub struct Role {
     name: String,
     position: usize,
     color: String,
-    #[serde(skip)]
     permissions: Permissions,
 }
 
@@ -134,9 +128,7 @@ pub struct WatchParty {
 #[derive(Serialize, Clone, Constructor)]
 pub struct PermissionOverride {
     pub target: OverrideTarget,
-    #[serde(serialize_with = "serialize_permissions_bits")]
     pub allow: Permissions,
-    #[serde(serialize_with = "serialize_permissions_bits")]
     pub deny: Permissions,
 }
 
@@ -361,11 +353,7 @@ impl Group {
         }
     }
 
-    pub fn remove_permission_override(
-        &mut self,
-        channel_id: ChannelId,
-        target: &OverrideTarget,
-    ) {
+    pub fn remove_permission_override(&mut self, channel_id: ChannelId, target: &OverrideTarget) {
         if let Some(channel) = self.channels.get_mut(&channel_id) {
             channel.permission_overrides.retain(|o| o.target != *target);
         }
@@ -450,5 +438,49 @@ impl Group {
         if let Some(u) = self.members.get_mut(&user_id_param) {
             u.roles.retain(|&r| r != role_id);
         }
+    }
+
+    // ===== MEMBER REMOVAL / BANS =====
+
+    pub fn remove_member(&mut self, user_id: UserId) {
+        self.members.remove(&user_id);
+        self.subscribers.remove(&user_id);
+
+        for channel in self.channels.values_mut() {
+            if let ChannelType::Voice {
+                users, watch_party, ..
+            } = &mut channel.r#type
+            {
+                users.remove(&user_id);
+                if let Some(party) = watch_party.as_mut() {
+                    party.users.remove(&user_id);
+                    if party.users.is_empty() {
+                        *watch_party = None;
+                    } else if party.host == user_id {
+                        party.host = *party
+                            .users
+                            .iter()
+                            .min()
+                            .expect("party.users guaranteed non-empty");
+                    }
+                }
+            }
+
+            channel
+                .permission_overrides
+                .retain(|o| o.target != OverrideTarget::User(user_id));
+        }
+    }
+
+    pub fn add_ban(&mut self, user_id: UserId) -> bool {
+        self.bans.insert(user_id)
+    }
+
+    pub fn remove_ban(&mut self, user_id: UserId) -> bool {
+        self.bans.remove(&user_id)
+    }
+
+    pub fn is_banned(&self, user_id: UserId) -> bool {
+        self.bans.contains(&user_id)
     }
 }

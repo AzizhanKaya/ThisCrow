@@ -3,7 +3,6 @@ use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 
 pub struct MessageService {
     store: MessageStore,
@@ -37,12 +36,11 @@ impl MessageService {
     pub async fn get_channel_messages(
         &self,
         channel_id: id,
-        start: Option<DateTime<Utc>>,
-        end: DateTime<Utc>,
+        before: Option<snowflake_id>,
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
         self.store
-            .get_channel_messages(channel_id, len, start, end)
+            .get_channel_messages(channel_id, len, before)
             .await
     }
 
@@ -50,12 +48,11 @@ impl MessageService {
         &self,
         user1: id,
         user2: id,
-        start: Option<DateTime<Utc>>,
-        end: DateTime<Utc>,
+        before: Option<snowflake_id>,
         len: Option<i64>,
     ) -> Result<Vec<StoredMessage>> {
         self.store
-            .get_direct_messages(user1, user2, len, start, end)
+            .get_direct_messages(user1, user2, len, before)
             .await
     }
 
