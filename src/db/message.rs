@@ -23,6 +23,8 @@ pub struct StoredMessage {
     pub group_id: Option<id>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overwrited: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reacted: Option<bool>,
 }
 
 impl From<StoredMessage> for Message<Data> {
@@ -60,6 +62,7 @@ impl<T: Serialize> TryFrom<Message<T>> for StoredMessage {
                 MessageType::Direct | MessageType::Info | MessageType::Server => None,
             },
             overwrited: None,
+            reacted: None,
         })
     }
 }

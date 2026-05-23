@@ -17,7 +17,6 @@ pub struct AppState {
     pub groups: DashMap<id, Group, BuildNoHashHasher<id>>,
     pub group_locks: LockMap<id>,
     pub voice_direct: DashMap<id, HashSet<id>, BuildNoHashHasher<id>>,
-    pub blocks: DashMap<id, HashSet<id>, BuildNoHashHasher<id>>,
     pub pool: PgPool,
     pub snowflake: SnowflakeGenerator,
     pub messages: MessageService,

@@ -361,3 +361,45 @@ pub async fn update_user(
 
     Ok(())
 }
+
+pub async fn get_blocks(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT "to" AS "id:id"
+        FROM blocks
+        WHERE "from" = $1
+        "#,
+        *user_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn get_blocked_by(pool: &Pool<Postgres>, user_id: id) -> Result<Vec<id>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT "from" AS "id:id"
+        FROM blocks
+        WHERE "to" = $1
+        "#,
+        *user_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn block(pool: &Pool<Postgres>, user_id: id, block_id: id) -> Result<()> {
+    sqlx::query!(
+        r#"
+        INSERT INTO blocks ("from", "to")
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
+        "#,
+        *user_id,
+        *block_id
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}

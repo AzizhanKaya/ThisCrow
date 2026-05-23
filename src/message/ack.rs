@@ -2,9 +2,10 @@ use crate::db::message::StoredMessage;
 use crate::id::id;
 use crate::message::event;
 use crate::message::snowflake::snowflake_id;
-use crate::state::group::{Group, OverrideTarget};
+use crate::state::group::{Group, OverrideTarget, Permissions};
 use crate::state::user;
 use serde::Serialize;
+use std::collections::HashMap;
 
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Clone, Default)]
@@ -13,11 +14,20 @@ pub enum Ack {
     #[default]
     None,
     Error(String),
+    MessageError(String),
 
     // Message
     Received(snowflake_id),
     Deleted(snowflake_id),
     Overwritten(Box<StoredMessage>),
+    Reacted {
+        message: snowflake_id,
+        reaction: char,
+    },
+    RemovedReaction {
+        message: snowflake_id,
+        reaction: char,
+    },
 
     // USER
     Initialized(Box<user::State>),
@@ -35,11 +45,16 @@ pub enum Ack {
     },
 
     // GROUP
-    Subscribed(Box<Group>),
+    Subscribed {
+        group: Box<Group>,
+        permissions: Permissions,
+        channel_permissions: HashMap<id, Permissions>,
+    },
     Unsubscribed,
+    PermissionsChanged(Permissions),
+    ChannelPermissionsChanged(Permissions),
     JoinedMember,
     LeftMember,
-    UserLeft,
     CreatedGroup {
         name: String,
         icon: Option<String>,
@@ -59,7 +74,6 @@ pub enum Ack {
     },
     CreatedRole {
         name: String,
-        permissions: u64,
         color: String,
     },
     UpdatedGroup {
@@ -75,7 +89,7 @@ pub enum Ack {
     },
     UpdatedRole {
         name: Option<String>,
-        permissions: Option<u64>,
+        permissions: Option<Permissions>,
         color: Option<String>,
         position: Option<usize>,
     },
@@ -100,8 +114,8 @@ pub enum Ack {
     MovedToVoice(id),
 
     // ==== WATCH PARTY ====
-    JoinedParty,
-    LeftParty,
+    JoinedParty(id),
+    LeftParty(id),
     Watching {
         video: id,
     },

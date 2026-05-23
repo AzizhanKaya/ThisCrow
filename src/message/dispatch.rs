@@ -1,7 +1,6 @@
 use super::ack::Ack;
 use crate::db::message::StoredMessage;
 use crate::id::id;
-use crate::message::NotifyIterExt;
 use crate::message::{Data, Event, Message, MessageType};
 use crate::state::group::Permissions;
 use crate::{State, msgpack};
@@ -51,11 +50,11 @@ pub async fn handle_bytes(
 
         let message_id = message.id;
 
-        if let Err(e) = dispatch_message(state, message).await {
+        if let Err(e) = dispatch_message(state, message, connection_id).await {
             if let Some(user) = state.users.get(&user_id) {
                 let error = Message {
                     id: message_id,
-                    data: Ack::Error(e.to_string()),
+                    data: Ack::MessageError(e.to_string()),
                     to: user_id,
                     ..Default::default()
                 };
@@ -86,24 +85,14 @@ pub async fn handle_bytes(
     anyhow::bail!("Unkown message struct: {:?}", value);
 }
 
-async fn dispatch_message(state: &State, message: Message<Data>) -> Result<()> {
+async fn dispatch_message(
+    state: &State,
+    message: Message<Data>,
+    connection_id: usize,
+) -> Result<()> {
     match message.r#type {
         MessageType::Direct => {
             let stored: StoredMessage = message.clone().try_into()?;
-
-            let sender_blocked_receiver = state
-                .blocks
-                .get(&message.from)
-                .map_or(false, |blocked| blocked.contains(&message.to));
-
-            let receiver_blocked_sender = state
-                .blocks
-                .get(&message.to)
-                .map_or(false, |blocked| blocked.contains(&message.from));
-
-            if sender_blocked_receiver || receiver_blocked_sender {
-                anyhow::bail!("You can't message a blocked user");
-            }
 
             state.messages.write(stored).await?;
             send_message(state, message);
@@ -133,7 +122,7 @@ async fn dispatch_message(state: &State, message: Message<Data>) -> Result<()> {
             let stored: StoredMessage = message.clone().try_into()?;
             state.messages.write(stored).await?;
 
-            send_group_message(state, message, group_id);
+            send_group_message(state, message, group_id, connection_id);
         }
         _ => {}
     }
@@ -154,19 +143,32 @@ pub fn send_message<T: Serialize>(state: &State, message: Message<T>) {
     }
 }
 
-fn send_group_message<T: Serialize>(state: &State, message: Message<T>, group_id: id) {
+fn send_group_message<T: Serialize>(
+    state: &State,
+    message: Message<T>,
+    group_id: id,
+    connection_id: usize,
+) {
     let Some(group) = state.groups.get(&group_id) else {
         return;
     };
 
+    let from = message.from;
     let channel_id = message.to;
+
+    let bytes = Bytes::from(msgpack!(message));
 
     group
         .subscribers
         .iter()
-        .filter(|&&user_id| {
+        .filter(|&&(user_id, conn_id)| {
             let perms = group.compute_permissions(user_id, Some(channel_id));
             perms.contains(Permissions::VIEW_MESSAGES)
+                && !(user_id == from && conn_id == connection_id)
         })
-        .notify(message, state);
+        .for_each(|&(_, conn_id)| {
+            if let Some(user) = state.users.get(&from) {
+                user.send_bytes_connection(conn_id, bytes.clone());
+            }
+        })
 }

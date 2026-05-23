@@ -384,6 +384,37 @@ pub async fn update_channel(
     Ok(())
 }
 
+pub async fn delete_channel(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    channel_id: id,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let old_pos = sqlx::query_scalar!(
+        r#"SELECT position FROM channels WHERE id = $1"#,
+        *channel_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query!(r#"DELETE FROM channels WHERE id = $1"#, *channel_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query!(
+        r#"UPDATE channels SET position = position - 1 WHERE group_id = $1 AND position > $2"#,
+        *group_id,
+        old_pos
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(())
+}
+
 pub async fn set_permission_override(
     pool: &Pool<Postgres>,
     group_id: id,

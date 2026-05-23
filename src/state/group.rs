@@ -28,7 +28,6 @@ bitflags! {
         const VIEW_CHANNEL         = 1 << 9;
         const VIEW_MESSAGES        = 1 << 10;
         const SEND_MESSAGE        = 1 << 11;
-        const SEND_TTS_MESSAGES    = 1 << 12;
         const MANAGE_MESSAGES      = 1 << 13;
         const EMBED_LINKS          = 1 << 14;
         const ATTACH_FILES         = 1 << 15;
@@ -62,6 +61,7 @@ type id = Id::id;
 type UserId = id;
 type RoleId = id;
 type ChannelId = id;
+type ConnectionId = usize;
 
 #[derive(Serialize, Clone, Constructor)]
 pub struct Group {
@@ -72,9 +72,10 @@ pub struct Group {
     pub members: HashMap<UserId, Member>,
     pub roles: HashMap<RoleId, Role>,
     pub channels: HashMap<ChannelId, Channel>,
+    #[serde(skip)]
     pub everyone: Permissions,
     #[serde(skip)]
-    pub subscribers: HashSet<UserId>,
+    pub subscribers: HashSet<(UserId, ConnectionId)>,
     #[serde(skip)]
     pub bans: HashSet<UserId>,
 }
@@ -86,13 +87,24 @@ pub struct Member {
     roles: Vec<RoleId>,
 }
 
+impl Member {
+    pub fn id(&self) -> UserId {
+        self.id
+    }
+
+    pub fn has_role(&self, role_id: RoleId) -> bool {
+        self.roles.contains(&role_id)
+    }
+}
+
 #[derive(Serialize, Clone, Constructor)]
 pub struct Role {
     id: RoleId,
     name: String,
     position: usize,
     color: String,
-    permissions: Permissions,
+    #[serde(skip)]
+    pub permissions: Permissions,
 }
 
 #[derive(Serialize, Clone, Constructor)]
@@ -103,6 +115,7 @@ pub struct Channel {
     position: usize,
     #[serde(flatten)]
     pub r#type: ChannelType,
+    #[serde(skip)]
     pub permission_overrides: Vec<PermissionOverride>,
 }
 
@@ -123,6 +136,29 @@ pub struct WatchParty {
     pub users: HashSet<id>,
     pub offset: f64,
     pub playing: bool,
+}
+
+pub trait WatchPartyOpt {
+    fn remove_user(&mut self, user_id: UserId);
+}
+
+impl WatchPartyOpt for Option<WatchParty> {
+    fn remove_user(&mut self, user_id: UserId) {
+        let Some(party) = self else {
+            return;
+        };
+
+        party.users.remove(&user_id);
+
+        if party.users.is_empty() {
+            *self = None;
+            return;
+        }
+
+        if party.host == user_id {
+            party.host = *party.users.iter().min().unwrap();
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Constructor)]
@@ -197,31 +233,37 @@ impl Group {
         perms
     }
 
-    pub fn subscribe(&mut self, user_id: id) -> bool {
-        self.subscribers.insert(user_id)
+    pub fn subscribe(&mut self, user_id: id, conn_id: ConnectionId) -> bool {
+        self.subscribers.insert((user_id, conn_id))
     }
 
-    pub fn unsubscribe(&mut self, user_id: id) -> bool {
-        self.subscribers.remove(&user_id)
+    pub fn unsubscribe(&mut self, user_id: id, conn_id: ConnectionId) -> bool {
+        self.subscribers.remove(&(user_id, conn_id))
     }
 
     pub fn notify(&self, message: Message<Ack>, state: &State) {
         let message = Bytes::from(msgpack!(message));
-        self.subscribers.iter().for_each(|user_id| {
+        self.subscribers.iter().for_each(|(user_id, conn_id)| {
             if let Some(user) = state.users.get(user_id) {
-                user.send_bytes(message.clone());
+                user.send_bytes_connection(*conn_id, message.clone());
             }
         });
     }
 
-    pub fn notify_without(&self, message: Message<Ack>, user_id: id, state: &State) {
+    pub fn notify_without(
+        &self,
+        message: Message<Ack>,
+        user_id: id,
+        conn_id: ConnectionId,
+        state: &State,
+    ) {
         let message = Bytes::from(msgpack!(message));
         self.subscribers
             .iter()
-            .filter(|&&uid| uid != user_id)
-            .for_each(|user_id| {
+            .filter(|&&(uid, cid)| uid != user_id || cid != conn_id)
+            .for_each(|(user_id, conn_id)| {
                 if let Some(user) = state.users.get(user_id) {
-                    user.send_bytes(message.clone());
+                    user.send_bytes_connection(*conn_id, message.clone());
                 }
             });
     }
@@ -243,15 +285,92 @@ impl Group {
         state: &State,
     ) {
         let message = Bytes::from(msgpack!(message));
-        self.subscribers.iter().for_each(|user_id| {
-            if let Some(user) = state.users.get(user_id) {
-                if self
-                    .compute_permissions(*user_id, channel_id)
-                    .contains(permissions)
-                {
-                    user.send_bytes(message.clone());
-                }
+
+        self.subscribers.iter().for_each(|(user_id, conn_id)| {
+            let Some(user) = state.users.get(user_id) else {
+                return;
+            };
+
+            if self
+                .compute_permissions(*user_id, channel_id)
+                .contains(permissions)
+            {
+                user.send_bytes_connection(*conn_id, message.clone());
             }
+        });
+    }
+
+    pub fn notify_with_filter<F>(
+        &self,
+        message: Message<Ack>,
+        channel_id: Option<ChannelId>,
+        state: &State,
+        mut filter: F,
+    ) where
+        F: FnMut(Permissions) -> bool,
+    {
+        let message = Bytes::from(msgpack!(message));
+
+        self.subscribers.iter().for_each(|(user_id, conn_id)| {
+            let Some(user) = state.users.get(user_id) else {
+                return;
+            };
+
+            let user_perms = self.compute_permissions(*user_id, channel_id);
+
+            if filter(user_perms) {
+                user.send_bytes_connection(*conn_id, message.clone());
+            }
+        });
+    }
+
+    pub fn members_affected_by_target(&self, target: &OverrideTarget) -> Vec<UserId> {
+        match target {
+            OverrideTarget::User(uid) => vec![*uid],
+            OverrideTarget::Role(rid) if *rid == Id::id(0) => {
+                self.members.keys().copied().collect()
+            }
+            OverrideTarget::Role(rid) => self
+                .members
+                .values()
+                .filter(|m| m.has_role(*rid))
+                .map(|m| m.id())
+                .collect(),
+        }
+    }
+
+    pub fn notify_permissions(
+        &self,
+        affected: impl IntoIterator<Item = UserId>,
+        channel_id: Option<ChannelId>,
+        state: &State,
+    ) {
+        affected.into_iter().for_each(|user_id| {
+            let Some(user) = state.users.get(&user_id) else {
+                return;
+            };
+
+            let Some((_, conn_id)) = self
+                .subscribers
+                .iter()
+                .find(|(sub_user_id, _)| *sub_user_id == user_id)
+            else {
+                return;
+            };
+
+            let perms = self.compute_permissions(user_id, channel_id);
+
+            let ack = Message {
+                from: self.id,
+                to: channel_id.unwrap_or(self.id),
+                data: match channel_id {
+                    Some(_) => Ack::ChannelPermissionsChanged(perms),
+                    None => Ack::PermissionsChanged(perms),
+                },
+                ..Message::default()
+            };
+
+            user.send_message_connection(*conn_id, ack);
         });
     }
 
@@ -359,10 +478,6 @@ impl Group {
         }
     }
 
-    pub fn update_everyone(&mut self, permissions: Permissions) {
-        self.everyone = permissions;
-    }
-
     // ===== ROLE =====
     pub fn create_role(
         &mut self,
@@ -444,7 +559,8 @@ impl Group {
 
     pub fn remove_member(&mut self, user_id: UserId) {
         self.members.remove(&user_id);
-        self.subscribers.remove(&user_id);
+        self.subscribers
+            .retain(|(sub_user_id, _)| *sub_user_id != user_id);
 
         for channel in self.channels.values_mut() {
             if let ChannelType::Voice {
@@ -452,18 +568,7 @@ impl Group {
             } = &mut channel.r#type
             {
                 users.remove(&user_id);
-                if let Some(party) = watch_party.as_mut() {
-                    party.users.remove(&user_id);
-                    if party.users.is_empty() {
-                        *watch_party = None;
-                    } else if party.host == user_id {
-                        party.host = *party
-                            .users
-                            .iter()
-                            .min()
-                            .expect("party.users guaranteed non-empty");
-                    }
-                }
+                watch_party.remove_user(user_id);
             }
 
             channel

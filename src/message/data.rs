@@ -2,13 +2,20 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::message::snowflake::snowflake_id;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileMeta {
+    pub url: String,
+    pub name: String,
+    pub size: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde_with::skip_serializing_none]
 pub struct MultiData {
     text: Option<String>,
     images: Option<Vec<String>>,
     videos: Option<Vec<String>>,
-    files: Option<Vec<String>>,
+    files: Option<Vec<FileMeta>>,
 }
 
 impl<'de> Deserialize<'de> for MultiData {
@@ -21,7 +28,7 @@ impl<'de> Deserialize<'de> for MultiData {
             text: Option<String>,
             images: Option<Vec<String>>,
             videos: Option<Vec<String>>,
-            files: Option<Vec<String>>,
+            files: Option<Vec<FileMeta>>,
         }
 
         let helper = Helper::deserialize(deserializer)?;

@@ -1,3 +1,4 @@
+use crate::db;
 use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::msgpack::MsgPack;
@@ -100,6 +101,34 @@ pub async fn get_voice_direct(
     Ok(MsgPack(voice_direct))
 }
 
+pub async fn get_blocks(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<MsgPack<Vec<id>>, Error> {
+    let blocks = db::user::get_blocks(&state.pool, user.id)
+        .await
+        .map_err(|e| {
+            warn!("Error while getting blocks: {}", e);
+            error::ErrorInternalServerError("Error while getting blocks")
+        })?;
+
+    Ok(MsgPack(blocks))
+}
+
+pub async fn get_blocked_by(
+    state: State,
+    user: web::ReqData<JwtUser>,
+) -> Result<MsgPack<Vec<id>>, Error> {
+    let blocked_by = db::user::get_blocked_by(&state.pool, user.id)
+        .await
+        .map_err(|e| {
+            warn!("Error while getting blocked_by: {}", e);
+            error::ErrorInternalServerError("Error while getting blocked_by")
+        })?;
+
+    Ok(MsgPack(blocked_by))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/state")
@@ -109,6 +138,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/groups", web::get().to(get_groups))
             .route("/me", web::get().to(me))
             .route("/voice_direct", web::get().to(get_voice_direct))
+            .route("/blocks", web::get().to(get_blocks))
+            .route("/blocked_by", web::get().to(get_blocked_by))
             .route("/logout", web::get().to(log_out)),
     );
 }

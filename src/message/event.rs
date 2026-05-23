@@ -1,8 +1,10 @@
 use crate::db::{self};
 use crate::id::id;
 use crate::message::data::Data;
+use crate::message::snowflake::snowflake_id;
 use crate::message::{Ack, MessageType};
 use crate::msgpack;
+use crate::state::group::WatchPartyOpt;
 use crate::state::group::{ChannelType, Group, OverrideTarget};
 use crate::state::group::{Permissions, WatchParty};
 use crate::state::user::{self, Voice, VoiceType};
@@ -34,7 +36,7 @@ pub enum Event {
     FriendAccept,
     FriendRemove,
 
-    /* ===== Group ===== */
+    /* ===== GROUP ===== */
     CreateGroup {
         name: String,
         icon: Option<String>,
@@ -127,6 +129,16 @@ pub enum Event {
     JumpTo {
         offset: f64,
         play: bool,
+    },
+
+    /* ===== MESSAGE ===== */
+    Reaction {
+        message: snowflake_id,
+        reaction: char,
+    },
+    RemoveReaction {
+        message: snowflake_id,
+        reaction: char,
     },
 }
 
@@ -507,6 +519,13 @@ pub async fn handle_event(
                         anyhow::bail!("Already in a voice channel");
                     }
 
+                    dbg!(
+                        state
+                            .users
+                            .get(&message.from)
+                            .map_or(false, |u| u.state.voice.is_some())
+                    );
+
                     let existing_id = state.users.get(&message.to).and_then(|other| {
                         match other.state.voice.as_ref()?.r#type {
                             VoiceType::Direct { user, message_id } if user == message.from => {
@@ -642,6 +661,36 @@ pub async fn handle_event(
                     }
                 }
 
+                Event::Reaction {
+                    message: target,
+                    reaction,
+                } => {
+                    db::reaction::handle_reaction(
+                        state,
+                        message.id,
+                        message.from,
+                        target,
+                        reaction,
+                        true,
+                    )
+                    .await?;
+                }
+
+                Event::RemoveReaction {
+                    message: target,
+                    reaction,
+                } => {
+                    db::reaction::handle_reaction(
+                        state,
+                        message.id,
+                        message.from,
+                        target,
+                        reaction,
+                        false,
+                    )
+                    .await?;
+                }
+
                 _ => anyhow::bail!("Invalid event"),
             }
         }
@@ -665,15 +714,28 @@ pub async fn handle_event(
                                 anyhow::bail!("User is not a member of this group");
                             }
 
-                            group.subscribe(message.from);
+                            group.subscribe(message.from, connection_id);
 
                             let group = group.downgrade();
+
+                            let permissions = group.compute_permissions(message.from, None);
+                            let channel_permissions = group
+                                .channels
+                                .keys()
+                                .map(|cid| {
+                                    (*cid, group.compute_permissions(message.from, Some(*cid)))
+                                })
+                                .collect();
 
                             let ack = Message {
                                 id: message.id,
                                 from: group_id,
                                 to: message.from,
-                                data: Ack::Subscribed(Box::new(group.clone())),
+                                data: Ack::Subscribed {
+                                    group: Box::new(group.clone()),
+                                    permissions,
+                                    channel_permissions,
+                                },
                                 ..Message::default()
                             };
 
@@ -686,7 +748,7 @@ pub async fn handle_event(
 
                 Event::Unsubscribe => {
                     if let Entry::Occupied(mut group) = state.groups.entry(group_id) {
-                        group.get_mut().unsubscribe(message.from);
+                        group.get_mut().unsubscribe(message.from, connection_id);
 
                         if let Some(user) = state.users.get(&message.from) {
                             let ack = Message {
@@ -734,7 +796,7 @@ pub async fn handle_event(
                 } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_GROUP | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_GROUP) {
                             anyhow::bail!("Unauthorized to update group");
                         }
                     } else {
@@ -830,9 +892,7 @@ pub async fn handle_event(
                 } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms
-                            .contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.contains(Permissions::MANAGE_CHANNELS) {
                             anyhow::bail!("Unauthorized to create channel");
                         }
                     } else {
@@ -882,9 +942,7 @@ pub async fn handle_event(
 
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, Some(channel_id));
-                        if !perms
-                            .contains(Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.contains(Permissions::MANAGE_CHANNELS) {
                             anyhow::bail!("Unauthorized to create channel");
                         }
                     } else {
@@ -924,6 +982,41 @@ pub async fn handle_event(
                     }
                 }
 
+                Event::DeleteChannel => {
+                    let channel_id = message.to;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        let perms = group.compute_permissions(message.from, Some(channel_id));
+                        if !perms.contains(Permissions::MANAGE_CHANNELS) {
+                            anyhow::bail!("Unauthorized to delete channel");
+                        }
+                        if !group.channels.contains_key(&channel_id) {
+                            anyhow::bail!("Channel not found");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::delete_channel(&state.pool, group_id, channel_id).await?;
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.delete_channel(channel_id);
+
+                        let ack = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: channel_id,
+                            data: Ack::DeletedChannel,
+                            ..Message::default()
+                        };
+
+                        let group = group.downgrade();
+                        group.notify(ack, &state);
+                    }
+                }
+
                 Event::SetPermissionOverride {
                     target,
                     allow,
@@ -933,8 +1026,7 @@ pub async fn handle_event(
 
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, Some(channel_id));
-                        if !perms.intersects(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to set permission override");
                         }
                         if !group.channels.contains_key(&channel_id) {
@@ -969,7 +1061,7 @@ pub async fn handle_event(
                             from: group_id,
                             to: channel_id,
                             data: Ack::SetPermissionOverride {
-                                target,
+                                target: target.clone(),
                                 allow,
                                 deny,
                             },
@@ -977,7 +1069,15 @@ pub async fn handle_event(
                         };
 
                         let group = group.downgrade();
-                        group.notify(ack, &state);
+                        group.notify_with_permissions(
+                            ack,
+                            Permissions::MANAGE_ROLES,
+                            Some(channel_id),
+                            &state,
+                        );
+
+                        let affected = group.members_affected_by_target(&target);
+                        group.notify_permissions(affected, Some(channel_id), &state);
                     }
                 }
 
@@ -986,8 +1086,7 @@ pub async fn handle_event(
 
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, Some(channel_id));
-                        if !perms.intersects(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.intersects(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to delete permission override");
                         }
                         if !group.channels.contains_key(&channel_id) {
@@ -1008,15 +1107,21 @@ pub async fn handle_event(
                             id: message.id,
                             from: group_id,
                             to: channel_id,
-                            data: Ack::DeletedPermissionOverride { target },
+                            data: Ack::DeletedPermissionOverride {
+                                target: target.clone(),
+                            },
                             ..Message::default()
                         };
 
                         let group = group.downgrade();
                         group.notify(ack, &state);
+
+                        let affected = group.members_affected_by_target(&target);
+                        group.notify_permissions(affected, Some(channel_id), &state);
                     }
                 }
 
+                // ==== VOICE ====
                 Event::JoinVoice => {
                     let channel_id = message.to;
 
@@ -1155,8 +1260,7 @@ pub async fn handle_event(
                             anyhow::bail!("Cannot kick yourself");
                         }
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.intersects(Permissions::KICK_MEMBERS | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.intersects(Permissions::KICK_MEMBERS) {
                             anyhow::bail!("Unauthorized to kick");
                         }
                         if !group.members.contains_key(&target) {
@@ -1170,7 +1274,32 @@ pub async fn handle_event(
 
                     db::group::remove_member(&state.pool, group_id, target).await?;
 
-                    finalize_user_removal(state, group_id, target, message.id, false);
+                    let ack = Message {
+                        id: message.id,
+                        from: group_id,
+                        to: target,
+                        data: Ack::LeftMember,
+                        ..Message::default()
+                    };
+
+                    if let Some(mut user) = state.users.get_mut(&target) {
+                        user.state.groups.retain(|g| *g != group_id);
+                        if let Some(voice) = user.state.voice.as_ref() {
+                            if matches!(
+                                voice.r#type,
+                                VoiceType::Channel { group_id: vg, .. } if vg == group_id
+                            ) {
+                                user.state.voice = None;
+                            }
+                        }
+                        user.send_message(ack.clone());
+                    }
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.remove_member(target);
+                        let group = group.downgrade();
+                        group.notify(ack, &state);
+                    }
                 }
 
                 Event::BanUser => {
@@ -1184,8 +1313,7 @@ pub async fn handle_event(
                             anyhow::bail!("Cannot ban yourself");
                         }
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.intersects(Permissions::BAN_MEMBERS | Permissions::ADMINISTRATOR)
-                        {
+                        if !perms.intersects(Permissions::BAN_MEMBERS) {
                             anyhow::bail!("Unauthorized to ban");
                         }
                         if !group.members.contains_key(&target) {
@@ -1203,7 +1331,33 @@ pub async fn handle_event(
 
                     db::group::ban_user(&state.pool, group_id, target, message.from).await?;
 
-                    finalize_user_removal(state, group_id, target, message.id, true);
+                    let ack = Message {
+                        id: message.id,
+                        from: group_id,
+                        to: target,
+                        data: Ack::LeftMember,
+                        ..Message::default()
+                    };
+
+                    if let Some(mut user) = state.users.get_mut(&target) {
+                        user.state.groups.retain(|g| *g != group_id);
+                        if let Some(voice) = user.state.voice.as_ref() {
+                            if matches!(
+                                voice.r#type,
+                                VoiceType::Channel { group_id: vg, .. } if vg == group_id
+                            ) {
+                                user.state.voice = None;
+                            }
+                        }
+                        user.send_message(ack.clone());
+                    }
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.remove_member(target);
+                        group.add_ban(target);
+                        let group = group.downgrade();
+                        group.notify(ack, &state);
+                    }
                 }
 
                 /* ===== ROLE ===== */
@@ -1214,7 +1368,7 @@ pub async fn handle_event(
                 } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to create role");
                         }
                     } else {
@@ -1244,11 +1398,7 @@ pub async fn handle_event(
                             id: message.id,
                             from: group_id,
                             to: role_id,
-                            data: Ack::CreatedRole {
-                                name,
-                                color,
-                                permissions,
-                            },
+                            data: Ack::CreatedRole { name, color },
                             ..Message::default()
                         };
 
@@ -1257,6 +1407,7 @@ pub async fn handle_event(
                         group.notify(ack, &state);
                     }
                 }
+
                 Event::UpdateRole {
                     role,
                     name,
@@ -1266,7 +1417,7 @@ pub async fn handle_event(
                 } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to update role");
                         }
                     } else {
@@ -1275,10 +1426,7 @@ pub async fn handle_event(
 
                     let _lock = state.group_locks.write(group_id).await;
 
-                    if role == crate::id::id(0) {
-                        if name.is_some() || color.is_some() || position.is_some() {
-                            anyhow::bail!("Everyone role only supports permission updates");
-                        }
+                    if role == id(0) {
                         let Some(perms_bits) = permissions else {
                             anyhow::bail!("permissions required for everyone role");
                         };
@@ -1287,23 +1435,31 @@ pub async fn handle_event(
                             .await?;
 
                         if let Some(mut group) = state.groups.get_mut(&group_id) {
-                            group.update_everyone(Permissions::from_bits_truncate(perms_bits));
+                            group.everyone = Permissions::from_bits_truncate(perms_bits);
 
                             let ack = Message {
                                 id: message.id,
                                 from: group_id,
-                                to: crate::id::id(0),
+                                to: id(0),
                                 data: Ack::UpdatedRole {
                                     name: None,
                                     color: None,
-                                    permissions: Some(perms_bits),
                                     position: None,
+                                    permissions: Some(group.everyone),
                                 },
                                 ..Message::default()
                             };
 
                             let group = group.downgrade();
-                            group.notify(ack, &state);
+                            group.notify_with_permissions(
+                                ack,
+                                Permissions::MANAGE_ROLES,
+                                None,
+                                &state,
+                            );
+
+                            let affected: Vec<id> = group.members.keys().copied().collect();
+                            group.notify_permissions(affected, None, &state);
                         }
                         return Ok(());
                     }
@@ -1320,40 +1476,74 @@ pub async fn handle_event(
                     .await?;
 
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
-                        group.update_role(
-                            role,
-                            name.clone(),
-                            position,
-                            color.clone(),
-                            permissions.map(|p| Permissions::from_bits_truncate(p)),
-                        );
+                        let permissions = permissions.map(Permissions::from_bits_truncate);
+
+                        group.update_role(role, name.clone(), position, color.clone(), permissions);
+
+                        let group = group.downgrade();
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
                             to: role,
                             data: Ack::UpdatedRole {
-                                name,
-                                color,
-                                permissions,
+                                name: name.clone(),
+                                color: color.clone(),
                                 position,
+                                permissions: None,
                             },
                             ..Message::default()
                         };
 
-                        let group = group.downgrade();
+                        if permissions.is_none() {
+                            group.notify(ack, &state);
+                            return Ok(());
+                        }
 
-                        group.notify(ack, &state);
+                        let ack_with_permissions = Message {
+                            id: message.id,
+                            from: group_id,
+                            to: role,
+                            data: Ack::UpdatedRole {
+                                name,
+                                color,
+                                position,
+                                permissions,
+                            },
+                            ..Message::default()
+                        };
+
+                        let affected: Vec<id> = group
+                            .members
+                            .values()
+                            .filter(|m| m.has_role(role))
+                            .map(|m| m.id())
+                            .collect();
+
+                        group.notify_permissions(affected, None, &state);
+
+                        group.notify_with_permissions(
+                            ack_with_permissions,
+                            Permissions::MANAGE_ROLES,
+                            None,
+                            &state,
+                        );
+
+                        group.notify_with_filter(ack, None, &state, |p| {
+                            !p.contains(Permissions::MANAGE_ROLES)
+                        });
+
+                        return Ok(());
                     }
                 }
 
                 Event::DeleteRole { role } => {
-                    if role == crate::id::id(0) {
+                    if role == id(0) {
                         anyhow::bail!("Cannot delete everyone role");
                     }
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to delete role");
                         }
                     } else {
@@ -1367,6 +1557,8 @@ pub async fn handle_event(
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         group.delete_role(role);
 
+                        let group = group.downgrade();
+
                         let ack = Message {
                             id: message.id,
                             from: group_id,
@@ -1375,16 +1567,22 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
-                        let group = group.downgrade();
+                        let affected: Vec<id> = group
+                            .members
+                            .values()
+                            .filter(|m| m.has_role(role))
+                            .map(|m| m.id())
+                            .collect();
 
                         group.notify(ack, &state);
+                        group.notify_permissions(affected, None, &state);
                     }
                 }
 
                 Event::AssignRole { user, role } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to assign role");
                         }
                     } else {
@@ -1409,13 +1607,14 @@ pub async fn handle_event(
                         let group = group.downgrade();
 
                         group.notify(ack, &state);
+                        group.notify_permissions([user], None, &state);
                     }
                 }
 
                 Event::RemoveRole { user, role } => {
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.contains(Permissions::MANAGE_ROLES | Permissions::ADMINISTRATOR) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to remove role");
                         }
                     } else {
@@ -1440,6 +1639,7 @@ pub async fn handle_event(
                         let group = group.downgrade();
 
                         group.notify(ack, &state);
+                        group.notify_permissions([user], None, &state);
                     }
                 }
 
@@ -1478,8 +1678,8 @@ pub async fn handle_event(
                         let ack = Message {
                             id: message.id,
                             from: group_id,
-                            to: message.from,
-                            data: Ack::JoinedParty,
+                            to: message.to,
+                            data: Ack::JoinedParty(message.from),
                             ..Message::default()
                         };
 
@@ -1501,27 +1701,13 @@ pub async fn handle_event(
                             anyhow::bail!("Channel is not a voice channel");
                         };
 
-                        let Some(party) = watch_party.as_mut() else {
-                            anyhow::bail!("Party not found");
-                        };
-
-                        party.users.remove(&message.from);
-
-                        if party.users.is_empty() {
-                            *watch_party = None;
-                        } else if party.host == message.from {
-                            party.host = *party
-                                .users
-                                .iter()
-                                .min()
-                                .expect("Users list is guaranteed to be non-empty");
-                        }
+                        watch_party.remove_user(message.from);
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
-                            to: message.from,
-                            data: Ack::LeftParty,
+                            to: message.to,
+                            data: Ack::LeftParty(message.from),
                             ..Message::default()
                         };
 
@@ -1604,8 +1790,38 @@ pub async fn handle_event(
                             ..Message::default()
                         };
 
-                        group.notify(ack, &state);
+                        group.notify(ack, state);
                     }
+                }
+
+                Event::Reaction {
+                    message: target,
+                    reaction,
+                } => {
+                    db::reaction::handle_reaction(
+                        state,
+                        message.id,
+                        message.from,
+                        target,
+                        reaction,
+                        true,
+                    )
+                    .await?;
+                }
+
+                Event::RemoveReaction {
+                    message: target,
+                    reaction,
+                } => {
+                    db::reaction::handle_reaction(
+                        state,
+                        message.id,
+                        message.from,
+                        target,
+                        reaction,
+                        false,
+                    )
+                    .await?;
                 }
 
                 _ => anyhow::bail!("Invalid event"),
@@ -1616,42 +1832,4 @@ pub async fn handle_event(
         }
     }
     Ok(())
-}
-
-fn finalize_user_removal(
-    state: &State,
-    group_id: id,
-    target: id,
-    message_id: crate::message::snowflake::snowflake_id,
-    banned: bool,
-) {
-    let ack = Message {
-        id: message_id,
-        from: group_id,
-        to: target,
-        data: Ack::UserLeft,
-        ..Message::default()
-    };
-
-    if let Some(mut user) = state.users.get_mut(&target) {
-        user.state.groups.retain(|g| *g != group_id);
-        if let Some(voice) = user.state.voice.as_ref() {
-            if matches!(
-                voice.r#type,
-                VoiceType::Channel { group_id: vg, .. } if vg == group_id
-            ) {
-                user.state.voice = None;
-            }
-        }
-        user.send_message(ack.clone());
-    }
-
-    if let Some(mut group) = state.groups.get_mut(&group_id) {
-        group.remove_member(target);
-        if banned {
-            group.add_ban(target);
-        }
-        let group = group.downgrade();
-        group.notify(ack, &state);
-    }
 }

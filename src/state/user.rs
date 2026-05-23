@@ -32,10 +32,8 @@ pub struct State {
     pub friend_requests_sent: Vec<id>,
     pub dms: HashSet<id>,
     pub groups: Vec<id>,
-    pub blocked: HashSet<id>,
     pub activities: Vec<Activity>,
     pub voice: Option<Voice>,
-    pub on_voice_direct: HashSet<id>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -105,6 +103,17 @@ impl Session {
         }
     }
 
+    pub fn send_bytes_connection(&self, conn_id: usize, bytes: impl Into<Bytes>) {
+        let bytes = bytes.into();
+        if let Some(connection) = self
+            .connections
+            .iter()
+            .find(|connection| connection.id == conn_id)
+        {
+            connection.writer.send(bytes);
+        }
+    }
+
     pub fn send_message<T: Serialize>(&self, message: Message<T>) {
         self.send_bytes(msgpack!(message));
     }
@@ -135,7 +144,11 @@ impl Session {
             .state
             .friends
             .iter()
-            .chain(groups.iter().flat_map(|group| group.subscribers.iter()))
+            .chain(
+                groups
+                    .iter()
+                    .flat_map(|group| group.subscribers.iter().map(|(uid, _)| uid)),
+            )
             .chain(self.state.friend_requests.iter())
             .chain(self.state.friend_requests_sent.iter())
             .chain(self.state.dms.iter())

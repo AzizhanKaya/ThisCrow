@@ -1,3 +1,5 @@
+use crate::db;
+use crate::db::reaction::Reaction;
 use crate::id::id;
 use crate::message::{Ack, Message};
 use crate::message::{Data, snowflake::snowflake_id};
@@ -50,7 +52,7 @@ pub async fn get_channel_messages(
         .filter(|group| {
             group
                 .compute_permissions(user.id, Some(query.channel_id))
-                .contains(Permissions::VIEW_MESSAGES & Permissions::READ_MESSAGE_HISTORY)
+                .contains(Permissions::VIEW_MESSAGES | Permissions::READ_MESSAGE_HISTORY)
         })
         .ok_or_else(|| error::ErrorUnauthorized("Don't have permissions to view this channel"))?;
 
@@ -172,6 +174,10 @@ async fn delete_message(
         ));
     }
 
+    db::reaction::delete_for_message(&state.pool, message.id)
+        .await
+        .map_err(ErrorInternalServerError)?;
+
     state
         .messages
         .delete(message.id)
@@ -198,6 +204,46 @@ async fn delete_message(
     }
 
     Ok(())
+}
+
+async fn get_message_reactions(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    path: web::Path<snowflake_id>,
+) -> Result<MsgPack<Vec<Reaction>>, Error> {
+    let message_id = path.into_inner();
+
+    let message = state
+        .messages
+        .get(message_id)
+        .await
+        .map_err(|_| error::ErrorNotFound("Message not found"))?;
+
+    if let Some(group_id) = message.group_id {
+        let group = state
+            .groups
+            .get(&group_id)
+            .ok_or_else(|| error::ErrorNotFound("Group not found"))?;
+
+        if !group
+            .compute_permissions(user.id, Some(message.to))
+            .contains(Permissions::VIEW_MESSAGES)
+        {
+            return Err(error::ErrorForbidden(
+                "You don't have permission to view this message",
+            ));
+        }
+    } else if message.from != user.id && message.to != user.id {
+        return Err(error::ErrorForbidden(
+            "You don't have permission to view this message",
+        ));
+    }
+
+    let reactions = db::reaction::list(&state.pool, message_id)
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    Ok(MsgPack(reactions))
 }
 
 async fn get_message(
@@ -259,6 +305,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/message")
             .route("/direct", web::get().to(get_messages))
             .route("/channel", web::get().to(get_channel_messages))
+            .route("/{id}/reactions", web::get().to(get_message_reactions))
             .route("/{id}", web::get().to(get_message))
             .route("/overwrite", web::post().to(overwrite_message))
             .route("/delete", web::post().to(delete_message))

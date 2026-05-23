@@ -9,6 +9,7 @@ use crate::message::event;
 use crate::middleware;
 use crate::msgpack;
 use crate::state::group::ChannelType;
+use crate::state::group::WatchPartyOpt;
 use crate::state::user;
 use crate::state::user::VoiceType;
 use anyhow::Result;
@@ -466,25 +467,9 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
                     anyhow::bail!("Channel not found");
                 };
 
-                let mut party_left = false;
-
                 if let ChannelType::Voice { users, watch_party } = &mut channel.r#type {
                     users.remove(&user_id);
-
-                    if let Some(party) = watch_party.as_mut() {
-                        if party.users.remove(&user_id) {
-                            party_left = true;
-                            if party.users.is_empty() {
-                                *watch_party = None;
-                            } else if party.host == user_id {
-                                party.host = *party
-                                    .users
-                                    .iter()
-                                    .min()
-                                    .expect("Users list is guaranteed to be non-empty");
-                            }
-                        }
-                    }
+                    watch_party.remove_user(user_id);
                 }
 
                 let group = group.downgrade();
@@ -499,19 +484,6 @@ async fn disconnect_voice(user_id: id, voice: user::VoiceType, state: &State) ->
                     },
                     &state,
                 );
-
-                if party_left {
-                    group.notify(
-                        Message {
-                            id: state.snowflake.generate(),
-                            from: group_id,
-                            to: user_id,
-                            data: Ack::LeftParty,
-                            ..Default::default()
-                        },
-                        &state,
-                    );
-                }
             }
         }
 

@@ -174,7 +174,7 @@ async fn list_invitations(
     if let Some(group) = state.groups.get(&group_id) {
         if !group
             .compute_permissions(user.id, None)
-            .intersects(Permissions::MANAGE_GROUP | Permissions::ADMINISTRATOR)
+            .contains(Permissions::MANAGE_GROUP)
         {
             return Err(error::ErrorForbidden(
                 "You don't have permission to list invitations",

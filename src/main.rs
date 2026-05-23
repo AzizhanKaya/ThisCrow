@@ -85,7 +85,6 @@ async fn main() -> std::io::Result<()> {
         users: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         groups: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         voice_direct: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
-        blocks: DashMap::with_hasher_and_shard_amount(hasher.clone(), 8),
         user_locks: LockMap::new(),
         group_locks: LockMap::new(),
         pool,
