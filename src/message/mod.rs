@@ -11,4 +11,4 @@ pub use ack::Ack;
 pub use data::Data;
 pub use event::Event;
 pub use model::{Message, MessageType};
-pub use notify::{NotifyCollectionExt, NotifyIterExt};
+pub use notify::NotifyCollectionExt;

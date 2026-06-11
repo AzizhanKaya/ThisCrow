@@ -6,8 +6,8 @@ use actix_web::{
     cookie::{Cookie, SameSite, time::Duration as CookieDuration},
     error, web,
 };
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use validator::Validate;
 
 #[cfg(feature = "mail")]
@@ -21,12 +21,11 @@ use {
     crate::mail,
     actix_web::http::header,
     chrono::{DateTime, Duration, Utc},
-    once_cell::sync::Lazy,
     rand::{Rng, distr::Alphanumeric},
     tokio::time::{self, Duration as TokioDuration},
 };
 
-static USERNAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
+static USERNAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_]+$").unwrap());
 
 // Authentication
 
@@ -64,24 +63,45 @@ static EMAIL_OTP_MAP: Lazy<DashMap<String, (Register, DateTime<Utc>)>> =
 
 #[derive(Deserialize, Validate)]
 struct Register {
-    #[validate(length(min = 3, max = 16))]
-    #[validate(regex(path = *USERNAME_RE))]
+    #[validate(length(
+        min = 3,
+        max = 16,
+        message = "Username must be between 3 and 16 characters."
+    ))]
+    #[validate(regex(path = *USERNAME_RE, message = "Username can only contain letters, digits and underscores."))]
     username: String,
 
-    #[validate(length(min = 1, max = 20))]
+    #[validate(length(
+        min = 1,
+        max = 20,
+        message = "Name must be between 1 and 20 characters."
+    ))]
     name: String,
 
-    #[validate(length(min = 8))]
+    #[validate(length(min = 8, message = "Password must be at least 8 characters."))]
     password: String,
 
-    #[validate(email)]
+    #[validate(email(message = "Please enter a valid email address."))]
     email: String,
 
-    #[validate(length(min = 32, max = 32))]
+    #[validate(length(min = 32, max = 32, message = "Public key must be exactly 32 bytes."))]
     public_key: Vec<u8>,
 }
 
 async fn register(register: MsgPack<Register>, state: State) -> Result<HttpResponse, Error> {
+    if !cfg!(debug_assertions) {
+        register.validate().map_err(|e| {
+            let msg = e
+                .field_errors()
+                .values()
+                .flat_map(|errs| errs.iter())
+                .next()
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "Invalid input.".to_string());
+            error::ErrorBadRequest(msg)
+        })?;
+    }
+
     #[cfg(not(feature = "mail"))]
     {
         let id = db::user::register(
@@ -129,7 +149,7 @@ async fn register(register: MsgPack<Register>, state: State) -> Result<HttpRespo
                     *DOMAIN, register.email, otp)
             ).await.map_err(|_| error::ErrorInternalServerError("Can not send email"))?;
 
-        EMAIL_OTP_MAP.insert(otp, (register.0, Utc::now()));
+        EMAIL_OTP_MAP.insert(otp, (register, Utc::now()));
         Ok(HttpResponse::Ok().finish())
     }
 }
@@ -161,6 +181,7 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
         &user.name,
         &user.email,
         &user.password,
+        &user.public_key,
     )
     .await
     .map_err(|e| {

@@ -3,6 +3,7 @@ use crate::id as Id;
 use crate::message::Ack;
 use crate::message::Message;
 use crate::msgpack;
+use crate::state::user::Status;
 use bitflags::bitflags;
 use bytes::Bytes;
 use derive_more::Constructor;
@@ -136,6 +137,9 @@ pub struct WatchParty {
     pub users: HashSet<id>,
     pub offset: f64,
     pub playing: bool,
+    pub title: String,
+    pub duration: f64,
+    pub thumbnail: String,
 }
 
 pub trait WatchPartyOpt {
@@ -587,5 +591,41 @@ impl Group {
 
     pub fn is_banned(&self, user_id: UserId) -> bool {
         self.bans.contains(&user_id)
+    }
+
+    // ===== INFO =====
+
+    pub fn get_member_count(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn get_online_count(&self, state: &State) -> usize {
+        self.members
+            .keys()
+            .filter(|user_id| {
+                state
+                    .users
+                    .get(user_id)
+                    .map_or(false, |u| !matches!(u.state.status, Status::Offline))
+            })
+            .count()
+    }
+
+    pub fn get_text_channel_count(&self) -> usize {
+        self.channels
+            .values()
+            .filter(|c| matches!(c.r#type, ChannelType::Text))
+            .count()
+    }
+
+    pub fn get_voice_channel_count(&self) -> usize {
+        self.channels
+            .values()
+            .filter(|c| matches!(c.r#type, ChannelType::Voice { .. }))
+            .count()
+    }
+
+    pub fn get_owner(&self) -> Option<Member> {
+        self.members.get(&self.owner).cloned()
     }
 }

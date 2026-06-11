@@ -1,4 +1,5 @@
 use crate::id::id;
+use crate::middleware::JwtUser;
 use crate::msgpack::MsgPack;
 use crate::state;
 use crate::state::user::{Activity, Status};
@@ -170,37 +171,31 @@ struct GroupInfo {
     id: id,
     name: String,
     icon: Option<String>,
-}
-
-impl From<&state::group::Group> for GroupInfo {
-    fn from(value: &state::group::Group) -> Self {
-        Self {
-            id: value.id,
-            name: value.name.clone(),
-            icon: value.icon.clone(),
-        }
-    }
-}
-
-impl From<db::group::Group> for GroupInfo {
-    fn from(value: db::group::Group) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-            icon: value.icon,
-        }
-    }
+    position: i16,
 }
 
 async fn get_groups(
     state: State,
+    user: web::ReqData<JwtUser>,
     MsgPack(groups): MsgPack<Vec<id>>,
 ) -> Result<MsgPack<Vec<GroupInfo>>, Error> {
+    let positions = db::group::get_user_group_positions(&state.pool, user.id, &groups)
+        .await
+        .map_err(ErrorInternalServerError)?;
+
     let (in_state, in_db): (Vec<GroupInfo>, Vec<id>) =
         groups
             .into_iter()
             .partition_map(|gid| match state.groups.get(&gid) {
-                Some(g) => itertools::Either::Left(g.deref().into()),
+                Some(g) => {
+                    let g = g.deref();
+                    itertools::Either::Left(GroupInfo {
+                        id: g.id,
+                        name: g.name.clone(),
+                        icon: g.icon.clone(),
+                        position: positions.get(&gid).copied().unwrap_or(0),
+                    })
+                }
                 None => itertools::Either::Right(gid),
             });
 
@@ -208,7 +203,12 @@ async fn get_groups(
         .await
         .map_err(ErrorInternalServerError)?
         .into_iter()
-        .map(|g| g.into())
+        .map(|g| GroupInfo {
+            position: positions.get(&g.id).copied().unwrap_or(0),
+            id: g.id,
+            name: g.name,
+            icon: g.icon,
+        })
         .collect();
 
     Ok(MsgPack(

@@ -166,8 +166,8 @@ fn send_group_message<T: Serialize>(
             perms.contains(Permissions::VIEW_MESSAGES)
                 && !(user_id == from && conn_id == connection_id)
         })
-        .for_each(|&(_, conn_id)| {
-            if let Some(user) = state.users.get(&from) {
+        .for_each(|&(user_id, conn_id)| {
+            if let Some(user) = state.users.get(&user_id) {
                 user.send_bytes_connection(conn_id, bytes.clone());
             }
         })

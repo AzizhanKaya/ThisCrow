@@ -101,13 +101,21 @@ pub enum Event {
     },
 
     /* ===== VOICE ===== */
-    JoinVoice,
+    JoinVoice {
+        #[serde(default)]
+        mute: bool,
+        #[serde(default)]
+        deafen: bool,
+    },
     ExitVoice,
     MoveToVoice(id),
+    Mute(bool),
+    Deafen(bool),
 
     /* ===== MODERATION ===== */
     KickUser,
     BanUser,
+    LeaveGroup,
 
     // ==== webRTC ====
     Offer(String),
@@ -125,7 +133,12 @@ pub enum Event {
     // ==== WATCH PARTY ====
     JoinParty,
     LeaveParty,
-    Watch(id),
+    Watch {
+        video: id,
+        title: String,
+        duration: f64,
+        thumbnail: String,
+    },
     JumpTo {
         offset: f64,
         play: bool,
@@ -158,6 +171,24 @@ pub enum MusicEvent {
 pub enum GameEvent {
     Playing(user::Game),
     Stopped,
+}
+
+fn broadcast_voice_ack(state: &State, user_id: id, voice_type: &VoiceType, ack: Message<Ack>) {
+    match *voice_type {
+        VoiceType::Channel { group_id, .. } => {
+            if let Some(group) = state.groups.get(&group_id) {
+                group.notify(ack, state);
+            }
+        }
+        VoiceType::Direct { user: other, .. } => {
+            if let Some(me) = state.users.get(&user_id) {
+                me.send_message(ack.clone());
+            }
+            if let Some(other) = state.users.get(&other) {
+                other.send_message(ack);
+            }
+        }
+    }
 }
 
 pub async fn handle_event(
@@ -510,7 +541,9 @@ pub async fn handle_event(
                     }
                 }
 
-                Event::JoinVoice => {
+                Event::JoinVoice { mute, deafen } => {
+                    let mute = mute || deafen;
+
                     if state
                         .users
                         .get(&message.from)
@@ -518,13 +551,6 @@ pub async fn handle_event(
                     {
                         anyhow::bail!("Already in a voice channel");
                     }
-
-                    dbg!(
-                        state
-                            .users
-                            .get(&message.from)
-                            .map_or(false, |u| u.state.voice.is_some())
-                    );
 
                     let existing_id = state.users.get(&message.to).and_then(|other| {
                         match other.state.voice.as_ref()?.r#type {
@@ -555,7 +581,11 @@ pub async fn handle_event(
                     let ack = Message {
                         id: message.id,
                         to: message.from,
-                        data: Ack::JoinedVoice(message.to),
+                        data: Ack::JoinedVoice {
+                            channel_id: message.to,
+                            mute,
+                            deafen,
+                        },
                         ..Message::default()
                     };
 
@@ -566,6 +596,8 @@ pub async fn handle_event(
                                 user: message.to,
                                 message_id: call_message_id,
                             },
+                            mute,
+                            deafen,
                         });
                         user.send_message(ack.clone());
                         if is_new {
@@ -661,6 +693,66 @@ pub async fn handle_event(
                     }
                 }
 
+                Event::Mute(mute) => {
+                    let (voice_type, deafen) =
+                        if let Some(mut user) = state.users.get_mut(&message.from) {
+                            let Some(voice) = user.state.voice.as_mut() else {
+                                anyhow::bail!("Not in a voice channel");
+                            };
+                            voice.mute = mute || voice.deafen;
+                            (voice.r#type.clone(), voice.deafen)
+                        } else {
+                            anyhow::bail!("User not found");
+                        };
+
+                    let ack = Message {
+                        id: message.id,
+                        from: message.from,
+                        to: message.from,
+                        data: Ack::Muted(mute || deafen),
+                        ..Message::default()
+                    };
+
+                    broadcast_voice_ack(state, message.from, &voice_type, ack);
+                }
+
+                Event::Deafen(deafen) => {
+                    let (voice_type, was_muted) =
+                        if let Some(mut user) = state.users.get_mut(&message.from) {
+                            let Some(voice) = user.state.voice.as_mut() else {
+                                anyhow::bail!("Not in a voice channel");
+                            };
+                            let was_muted = voice.mute;
+                            voice.deafen = deafen;
+                            if deafen {
+                                voice.mute = true;
+                            }
+                            (voice.r#type.clone(), was_muted)
+                        } else {
+                            anyhow::bail!("User not found");
+                        };
+
+                    let deafen_ack = Message {
+                        id: message.id,
+                        from: message.from,
+                        to: message.from,
+                        data: Ack::Deafened(deafen),
+                        ..Message::default()
+                    };
+                    broadcast_voice_ack(state, message.from, &voice_type, deafen_ack);
+
+                    if deafen && !was_muted {
+                        let mute_ack = Message {
+                            id: message.id,
+                            from: message.from,
+                            to: message.from,
+                            data: Ack::Muted(true),
+                            ..Message::default()
+                        };
+                        broadcast_voice_ack(state, message.from, &voice_type, mute_ack);
+                    }
+                }
+
                 Event::Reaction {
                     message: target,
                     reaction,
@@ -727,6 +819,32 @@ pub async fn handle_event(
                                 })
                                 .collect();
 
+                            let mut voice_states = std::collections::HashMap::new();
+                            for (cid, channel) in &group.channels {
+                                if let crate::state::group::ChannelType::Voice { users, .. } =
+                                    &channel.r#type
+                                {
+                                    for uid in users {
+                                        if let Some(other) = state.users.get(uid) {
+                                            if let Some(v) = other.state.voice.as_ref() {
+                                                if matches!(
+                                                    v.r#type,
+                                                    VoiceType::Channel { channel_id: vc, .. } if vc == *cid
+                                                ) {
+                                                    voice_states.insert(
+                                                        *uid,
+                                                        crate::message::ack::VoiceStateSnapshot {
+                                                            mute: v.mute,
+                                                            deafen: v.deafen,
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             let ack = Message {
                                 id: message.id,
                                 from: group_id,
@@ -735,6 +853,7 @@ pub async fn handle_event(
                                     group: Box::new(group.clone()),
                                     permissions,
                                     channel_permissions,
+                                    voice_states,
                                 },
                                 ..Message::default()
                             };
@@ -1086,7 +1205,7 @@ pub async fn handle_event(
 
                     if let Some(group) = state.groups.get(&group_id) {
                         let perms = group.compute_permissions(message.from, Some(channel_id));
-                        if !perms.intersects(Permissions::MANAGE_ROLES) {
+                        if !perms.contains(Permissions::MANAGE_ROLES) {
                             anyhow::bail!("Unauthorized to delete permission override");
                         }
                         if !group.channels.contains_key(&channel_id) {
@@ -1122,7 +1241,8 @@ pub async fn handle_event(
                 }
 
                 // ==== VOICE ====
-                Event::JoinVoice => {
+                Event::JoinVoice { mute, deafen } => {
+                    let mute = mute || deafen;
                     let channel_id = message.to;
 
                     if let Some(group) = state.groups.get(&group_id) {
@@ -1163,6 +1283,8 @@ pub async fn handle_event(
                                     group_id,
                                     channel_id,
                                 },
+                                mute,
+                                deafen,
                             });
                         }
 
@@ -1170,7 +1292,11 @@ pub async fn handle_event(
                             id: message.id,
                             from: group_id,
                             to: message.from,
-                            data: Ack::JoinedVoice(channel_id),
+                            data: Ack::JoinedVoice {
+                                channel_id,
+                                mute,
+                                deafen,
+                            },
                             ..Message::default()
                         };
 
@@ -1260,7 +1386,7 @@ pub async fn handle_event(
                             anyhow::bail!("Cannot kick yourself");
                         }
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.intersects(Permissions::KICK_MEMBERS) {
+                        if !perms.contains(Permissions::KICK_MEMBERS) {
                             anyhow::bail!("Unauthorized to kick");
                         }
                         if !group.members.contains_key(&target) {
@@ -1313,7 +1439,7 @@ pub async fn handle_event(
                             anyhow::bail!("Cannot ban yourself");
                         }
                         let perms = group.compute_permissions(message.from, None);
-                        if !perms.intersects(Permissions::BAN_MEMBERS) {
+                        if !perms.contains(Permissions::BAN_MEMBERS) {
                             anyhow::bail!("Unauthorized to ban");
                         }
                         if !group.members.contains_key(&target) {
@@ -1355,6 +1481,52 @@ pub async fn handle_event(
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         group.remove_member(target);
                         group.add_ban(target);
+                        let group = group.downgrade();
+                        group.notify(ack, &state);
+                    }
+                }
+
+                Event::LeaveGroup => {
+                    let target = message.from;
+
+                    if let Some(group) = state.groups.get(&group_id) {
+                        if target == group.owner {
+                            anyhow::bail!("Owner cannot leave the group");
+                        }
+                        if !group.members.contains_key(&target) {
+                            anyhow::bail!("Not a member of this group");
+                        }
+                    } else {
+                        anyhow::bail!("Group not found");
+                    }
+
+                    let _lock = state.group_locks.write(group_id).await;
+
+                    db::group::remove_member(&state.pool, group_id, target).await?;
+
+                    let ack = Message {
+                        id: message.id,
+                        from: group_id,
+                        to: target,
+                        data: Ack::LeftMember,
+                        ..Message::default()
+                    };
+
+                    if let Some(mut user) = state.users.get_mut(&target) {
+                        user.state.groups.retain(|g| *g != group_id);
+                        if let Some(voice) = user.state.voice.as_ref() {
+                            if matches!(
+                                voice.r#type,
+                                VoiceType::Channel { group_id: vg, .. } if vg == group_id
+                            ) {
+                                user.state.voice = None;
+                            }
+                        }
+                        user.send_message(ack.clone());
+                    }
+
+                    if let Some(mut group) = state.groups.get_mut(&group_id) {
+                        group.remove_member(target);
                         let group = group.downgrade();
                         group.notify(ack, &state);
                     }
@@ -1644,8 +1816,6 @@ pub async fn handle_event(
                 }
 
                 Event::JoinParty => {
-                    let _lock = state.group_locks.write(group_id).await;
-
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         let Some(channel) = group.channels.get_mut(&message.to) else {
                             anyhow::bail!("Channel not found");
@@ -1690,8 +1860,6 @@ pub async fn handle_event(
                 }
 
                 Event::LeaveParty => {
-                    let _lock = state.group_locks.write(group_id).await;
-
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         let Some(channel) = group.channels.get_mut(&message.to) else {
                             anyhow::bail!("Channel not found");
@@ -1717,9 +1885,12 @@ pub async fn handle_event(
                     }
                 }
 
-                Event::Watch(video_id) => {
-                    let _lock = state.group_locks.write(group_id).await;
-
+                Event::Watch {
+                    video,
+                    title,
+                    duration,
+                    thumbnail,
+                } => {
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         let Some(channel) = group.channels.get_mut(&message.to) else {
                             anyhow::bail!("Channel not found");
@@ -1737,15 +1908,25 @@ pub async fn handle_event(
                             anyhow::bail!("You are not the host");
                         }
 
-                        watch_party.video = video_id;
-                        watch_party.offset = 0.0;
-                        watch_party.playing = false;
+                        if watch_party.video != video {
+                            watch_party.video = video;
+                            watch_party.offset = 0.0;
+                            watch_party.playing = false;
+                            watch_party.duration = duration;
+                            watch_party.title = title.clone();
+                            watch_party.thumbnail = thumbnail.clone();
+                        }
 
                         let ack = Message {
                             id: message.id,
                             from: group_id,
-                            to: message.from,
-                            data: Ack::Watching { video: video_id },
+                            to: message.to,
+                            data: Ack::Watching {
+                                video,
+                                title,
+                                duration,
+                                thumbnail,
+                            },
                             ..Message::default()
                         };
 
@@ -1756,8 +1937,6 @@ pub async fn handle_event(
                 }
 
                 Event::JumpTo { offset, play } => {
-                    let _lock = state.group_locks.write(group_id).await;
-
                     if let Some(mut group) = state.groups.get_mut(&group_id) {
                         let Some(channel) = group.channels.get_mut(&message.to) else {
                             anyhow::bail!("Channel not found");
@@ -1785,7 +1964,7 @@ pub async fn handle_event(
                         let ack = Message {
                             id: message.id,
                             from: group_id,
-                            to: message.from,
+                            to: message.to,
                             data: Ack::JumpedTo { offset, play },
                             ..Message::default()
                         };

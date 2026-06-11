@@ -87,6 +87,10 @@ pub struct Game {
 pub struct Voice {
     pub connection_id: usize,
     pub r#type: VoiceType,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub deafen: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

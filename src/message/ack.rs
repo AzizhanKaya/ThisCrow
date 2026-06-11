@@ -7,6 +7,12 @@ use crate::state::user;
 use serde::Serialize;
 use std::collections::HashMap;
 
+#[derive(Serialize, Clone, Debug)]
+pub struct VoiceStateSnapshot {
+    pub mute: bool,
+    pub deafen: bool,
+}
+
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Clone, Default)]
 #[serde(tag = "ack", content = "payload", rename_all = "snake_case")]
@@ -49,6 +55,7 @@ pub enum Ack {
         group: Box<Group>,
         permissions: Permissions,
         channel_permissions: HashMap<id, Permissions>,
+        voice_states: HashMap<id, VoiceStateSnapshot>,
     },
     Unsubscribed,
     PermissionsChanged(Permissions),
@@ -109,15 +116,24 @@ pub enum Ack {
     },
 
     // VOICE
-    JoinedVoice(id),
+    JoinedVoice {
+        channel_id: id,
+        mute: bool,
+        deafen: bool,
+    },
     ExitedVoice(id),
     MovedToVoice(id),
+    Muted(bool),
+    Deafened(bool),
 
     // ==== WATCH PARTY ====
     JoinedParty(id),
     LeftParty(id),
     Watching {
         video: id,
+        title: String,
+        duration: f64,
+        thumbnail: String,
     },
     JumpedTo {
         offset: f64,

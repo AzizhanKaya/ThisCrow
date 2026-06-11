@@ -172,10 +172,9 @@ async fn list_invitations(
     MsgPack(group_id): MsgPack<id>,
 ) -> Result<MsgPack<Vec<Invitation>>, Error> {
     if let Some(group) = state.groups.get(&group_id) {
-        if !group
-            .compute_permissions(user.id, None)
-            .contains(Permissions::MANAGE_GROUP)
-        {
+        if !group.compute_permissions(user.id, None).intersects(
+            Permissions::MANAGE_GROUP | Permissions::CREATE_INVITE | Permissions::DELETE_INVITE,
+        ) {
             return Err(error::ErrorForbidden(
                 "You don't have permission to list invitations",
             ));
@@ -207,6 +206,10 @@ struct InvitationInfo {
     group_icon: Option<String>,
     group_description: Option<String>,
     member_count: i64,
+    online_count: usize,
+    text_channel_count: usize,
+    voice_channel_count: usize,
+    owner: id,
 }
 
 async fn invitation_info(
@@ -248,12 +251,34 @@ async fn invitation_info(
             error::ErrorInternalServerError("Error while getting member count")
         })?;
 
+    let online_count = state
+        .groups
+        .get(&invitation.group_id)
+        .map(|g| g.get_online_count(&state))
+        .unwrap_or(0);
+
+    let text_channel_count = state
+        .groups
+        .get(&invitation.group_id)
+        .map(|g| g.get_text_channel_count())
+        .unwrap_or(0);
+
+    let voice_channel_count = state
+        .groups
+        .get(&invitation.group_id)
+        .map(|g| g.get_voice_channel_count())
+        .unwrap_or(0);
+
     Ok(MsgPack(InvitationInfo {
         group_id: invitation.group_id,
         group_name: group.name,
         group_icon: group.icon,
         group_description: group.description,
         member_count,
+        online_count,
+        text_channel_count,
+        voice_channel_count,
+        owner: group.created_by,
     }))
 }
 

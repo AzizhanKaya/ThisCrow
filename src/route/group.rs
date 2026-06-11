@@ -53,7 +53,7 @@ async fn list_role_permissions(
 
     if !group
         .compute_permissions(user.id, None)
-        .intersects(Permissions::MANAGE_ROLES)
+        .contains(Permissions::MANAGE_ROLES)
     {
         return Err(error::ErrorForbidden(
             "You don't have permission to view role permissions",
@@ -83,8 +83,8 @@ async fn list_channel_overrides(
         .ok_or_else(|| error::ErrorNotFound("Group not found"))?;
 
     if !group
-        .compute_permissions(user.id, None)
-        .intersects(Permissions::MANAGE_ROLES)
+        .compute_permissions(user.id, Some(channel_id))
+        .contains(Permissions::MANAGE_ROLES)
     {
         return Err(error::ErrorForbidden(
             "You don't have permission to view channel overrides",

@@ -25,6 +25,7 @@ pub struct Group {
     pub icon: Option<String>,
     pub name: String,
     pub description: Option<String>,
+    pub created_by: id,
 }
 
 pub async fn init_group(pool: &Pool<Postgres>, group_id: id) -> Result<state::Group, sqlx::Error> {
@@ -244,12 +245,9 @@ pub async fn update_group(
 }
 
 pub async fn delete_group(pool: &Pool<Postgres>, group_id: id) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        r#"DELETE FROM groups WHERE id = $1"#,
-        *group_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!(r#"DELETE FROM groups WHERE id = $1"#, *group_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -264,11 +262,12 @@ pub async fn get_groups_info(
     sqlx::query_as!(
         Group,
         r#"
-        SELECT 
+        SELECT
             g.id,
             g.icon,
             g.name,
-            g.description
+            g.description,
+            g.created_by
         FROM groups g
         WHERE g.id = ANY($1)
         "#,
@@ -276,6 +275,30 @@ pub async fn get_groups_info(
     )
     .fetch_all(pool)
     .await
+}
+
+pub async fn get_user_group_positions(
+    pool: &Pool<Postgres>,
+    user_id: id,
+    group_ids: &[id],
+) -> Result<HashMap<id, i16>, sqlx::Error> {
+    if group_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT group_id AS "group_id: id", position
+        FROM group_users
+        WHERE user_id = $1 AND group_id = ANY($2)
+        "#,
+        *user_id,
+        group_ids as _
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| (r.group_id, r.position)).collect())
 }
 
 /* ===== CHANNEL ===== */
@@ -495,8 +518,14 @@ pub async fn create_role(
 ) -> Result<id, sqlx::Error> {
     let rec = sqlx::query!(
         r#"
-        INSERT INTO roles (group_id, name, color, permissions)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO roles (group_id, name, color, permissions, position)
+        VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            (SELECT COALESCE(MAX(position), 0) + 1 FROM roles WHERE group_id = $1)
+        )
         RETURNING id as "id:id"
         "#,
         *group_id,
@@ -567,8 +596,8 @@ pub async fn update_role(
     }
     sqlx::query!(
         r#"
-        UPDATE roles 
-            SET name = COALESCE($2, name), 
+        UPDATE roles
+            SET name = COALESCE($2, name),
             color = COALESCE($3, color),
             permissions = COALESCE($4, permissions),
             position = COALESCE($5, position)
@@ -580,8 +609,10 @@ pub async fn update_role(
         permissions.map(|p| p as i64),
         position.map(|p| p as i16)
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(())
 }
