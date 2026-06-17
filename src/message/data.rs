@@ -16,6 +16,17 @@ pub struct MultiData {
     images: Option<Vec<String>>,
     videos: Option<Vec<String>>,
     files: Option<Vec<FileMeta>>,
+    links: Option<Vec<String>>,
+}
+
+impl MultiData {
+    pub fn has_attachment(&self) -> bool {
+        self.images.is_some() || self.videos.is_some() || self.files.is_some()
+    }
+
+    pub fn has_links(&self) -> bool {
+        self.text.is_some() && self.links.is_some()
+    }
 }
 
 impl<'de> Deserialize<'de> for MultiData {
@@ -29,22 +40,31 @@ impl<'de> Deserialize<'de> for MultiData {
             images: Option<Vec<String>>,
             videos: Option<Vec<String>>,
             files: Option<Vec<FileMeta>>,
+            links: Option<Vec<String>>,
+        }
+
+        impl Helper {
+            fn has_attachment(&self) -> bool {
+                self.images.is_some() || self.videos.is_some() || self.files.is_some()
+            }
+
+            fn has_links(&self) -> bool {
+                self.text.is_some() && self.links.is_some()
+            }
         }
 
         let helper = Helper::deserialize(deserializer)?;
 
-        if helper.text.is_none()
-            && helper.images.is_none()
-            && helper.videos.is_none()
-            && helper.files.is_none()
-        {
+        if !helper.has_attachment() && !helper.has_links() {
             return Err(de::Error::custom("At least one field must be Some"));
         }
+
         Ok(MultiData {
             text: helper.text,
             images: helper.images,
             videos: helper.videos,
             files: helper.files,
+            links: helper.links,
         })
     }
 }

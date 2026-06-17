@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_id AS \"user_id: id\", reaction FROM reactions\n           WHERE message_id = $1 ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id: id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "reaction",
+        "type_info": "Bpchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7b30b8a3cff9371da6861c93a2e62f521634c2249cccbcc6fc50fa5a5665ad18"
+}

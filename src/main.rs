@@ -133,6 +133,7 @@ async fn main() -> std::io::Result<()> {
                         | b"http://tauri.localhost"
                         | b"https://thiscrow.net"
                         | b"https://www.thiscrow.net"
+                        | b"tauri://localhost"
                 )
             })
             .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])

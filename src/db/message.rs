@@ -453,6 +453,49 @@ impl MessageStore {
         .context("Failed to spawn blocking task for delete")?
     }
 
+    pub async fn delete_channel_messages(&self, channel_id: id) -> Result<()> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let cf_channel = db
+                .cf_handle(CF_CHANNEL_INDEX)
+                .context("CF_CHANNEL_INDEX cf not found")?;
+            let cf_messages = db
+                .cf_handle(CF_MESSAGES)
+                .context("CF_MESSAGES cf not found")?;
+
+            let prefix = channel_id.to_be_bytes();
+
+            let iter = db.iterator_cf(
+                &cf_channel,
+                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+            );
+
+            let mut batch = rocksdb::WriteBatch::default();
+
+            for item in iter {
+                let (key, _) = item.context("Failed to read channel index item")?;
+
+                if !key.starts_with(&prefix) {
+                    break;
+                }
+
+                if key.len() == 12 {
+                    let message_id_bytes: [u8; 8] = key[4..12].try_into().unwrap();
+                    batch.delete_cf(&cf_messages, message_id_bytes);
+                }
+
+                batch.delete_cf(&cf_channel, &key);
+            }
+
+            db.write(batch)
+                .context("Failed to write channel message delete batch")?;
+
+            Ok(())
+        })
+        .await
+        .context("Failed to spawn blocking task for delete_channel_messages")?
+    }
+
     pub async fn remove_dm(&self, from: id, to: id) -> Result<()> {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {

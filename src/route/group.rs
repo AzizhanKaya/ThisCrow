@@ -84,7 +84,7 @@ async fn list_channel_overrides(
 
     if !group
         .compute_permissions(user.id, Some(channel_id))
-        .contains(Permissions::MANAGE_ROLES)
+        .intersects(Permissions::MANAGE_ROLES | Permissions::MANAGE_CHANNELS)
     {
         return Err(error::ErrorForbidden(
             "You don't have permission to view channel overrides",

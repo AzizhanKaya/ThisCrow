@@ -1,0 +1,16 @@
+[
+  {
+    "origin": [
+      "http://localhost:5173",
+      "https://tauri.localhost",
+      "http://tauri.localhost",
+      "https://thiscrow.net",
+      "https://www.thiscrow.net",
+      "tauri://localhost",
+      "http://192.168.1.54"
+    ],
+    "method": ["GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD"],
+    "responseHeader": ["Content-Type", "Authorization", "X-Requested-With", "Origin", "Accept", "*"],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO roles (group_id, name, color, permissions, position)\n        VALUES (\n            $1,\n            $2,\n            $3,\n            $4,\n            (SELECT COALESCE(MAX(position), 0) + 1 FROM roles WHERE group_id = $1)\n        )\n        RETURNING id as \"id:id\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id:id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2d856e6ae2ef18f76e4f90a3b634035525546ea77a59fe864eb7073efc61dab5"
+}

@@ -766,6 +766,32 @@ pub async fn remove_member(
     Ok(())
 }
 
+pub async fn get_owner(pool: &Pool<Postgres>, group_id: id) -> Result<id, sqlx::Error> {
+    let owner_id = sqlx::query_scalar!(
+        r#"SELECT created_by FROM groups WHERE id = $1"#,
+        *group_id
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(id::from(owner_id))
+}
+
+pub async fn is_member(
+    pool: &Pool<Postgres>,
+    group_id: id,
+    user_id: id,
+) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM group_users WHERE group_id = $1 AND user_id = $2)"#,
+        *group_id,
+        *user_id
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or(false);
+    Ok(exists)
+}
+
 /* ===== BANS ===== */
 
 #[derive(sqlx::FromRow, serde::Serialize)]

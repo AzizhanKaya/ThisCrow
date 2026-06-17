@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            u.id        AS \"id: id\",\n            u.username,\n            u.name,\n            u.avatar,\n            b.banned_by AS \"banned_by: id\",\n            b.banned_at\n        FROM group_bans b\n        JOIN users u ON u.id = b.user_id\n        WHERE b.group_id = $1\n        ORDER BY b.banned_at DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "avatar",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "banned_by: id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "banned_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "a9fe8b3b11a8fa39b5f4bb09fe24fd260d3e0d5c896c8f393ea52d490d0cad6d"
+}

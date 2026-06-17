@@ -2,8 +2,10 @@
 .env
 /uploads
 /data
-*.json
+gcp-key.json
 .gitignore
 CLAUDE.md
 .claude
 thiscrow.code-workspace
+mutagen.yml.lock
+mutagen.yml

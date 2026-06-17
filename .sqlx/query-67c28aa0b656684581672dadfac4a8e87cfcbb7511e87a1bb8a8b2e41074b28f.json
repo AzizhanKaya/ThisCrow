@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND reaction = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Bpchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67c28aa0b656684581672dadfac4a8e87cfcbb7511e87a1bb8a8b2e41074b28f"
+}

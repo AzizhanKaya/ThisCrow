@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT group_id AS \"group_id: id\", position\n        FROM group_users\n        WHERE user_id = $1 AND group_id = ANY($2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id: id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "position",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3444fa71058a913b7bc3c6135b05d68456d82071f5c559f2099da411e3f5f19f"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM permission_overrides\n        WHERE channel_id = $1\n          AND role_id IS NOT DISTINCT FROM $2\n          AND user_id IS NOT DISTINCT FROM $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9df7f86e80ce11864d22ff9594b38721ea328ac363445d50592a434b7689de69"
+}

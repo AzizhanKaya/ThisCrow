@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE channels SET position = position - 1 WHERE group_id = $1 AND position > $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f3330f543db1737aef3b3498c26749c71641478925055656d7fff63a744b39d8"
+}

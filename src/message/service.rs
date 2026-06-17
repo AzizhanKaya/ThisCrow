@@ -29,6 +29,10 @@ impl MessageService {
         self.store.delete(message_id).await
     }
 
+    pub async fn delete_channel_messages(&self, channel_id: id) -> Result<()> {
+        self.store.delete_channel_messages(channel_id).await
+    }
+
     pub async fn remove_dm(&self, from: id, to: id) -> Result<()> {
         self.store.remove_dm(from, to).await
     }

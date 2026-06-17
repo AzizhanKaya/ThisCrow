@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \"to\" AS \"id:id\"\n        FROM blocks\n        WHERE \"from\" = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id:id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2d571907d7b2adada14ec4ca174ed59c03e2d17136a339984c4577e8b7eb928d"
+}

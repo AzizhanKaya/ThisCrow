@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_users SET position = position + 1\n               WHERE user_id = $1 AND group_id != $2 AND position >= $3 AND position < $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6829b91eb860b4bc4bfbbf4bedd808777b9a1e2da78475480c4682439c513577"
+}

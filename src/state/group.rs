@@ -369,7 +369,18 @@ impl Group {
                 to: channel_id.unwrap_or(self.id),
                 data: match channel_id {
                     Some(_) => Ack::ChannelPermissionsChanged(perms),
-                    None => Ack::PermissionsChanged(perms),
+                    None => {
+                        let channel_permissions = self
+                            .channels
+                            .keys()
+                            .map(|&cid| (cid, self.compute_permissions(user_id, Some(cid))))
+                            .collect();
+
+                        Ack::PermissionsChanged {
+                            permissions: perms,
+                            channel_permissions,
+                        }
+                    }
                 },
                 ..Message::default()
             };

@@ -58,7 +58,10 @@ pub enum Ack {
         voice_states: HashMap<id, VoiceStateSnapshot>,
     },
     Unsubscribed,
-    PermissionsChanged(Permissions),
+    PermissionsChanged {
+        permissions: Permissions,
+        channel_permissions: HashMap<id, Permissions>,
+    },
     ChannelPermissionsChanged(Permissions),
     JoinedMember,
     LeftMember,

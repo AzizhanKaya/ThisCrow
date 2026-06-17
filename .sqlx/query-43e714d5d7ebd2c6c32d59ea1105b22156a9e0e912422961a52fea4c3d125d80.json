@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO reactions (message_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT (message_id, user_id, reaction) DO NOTHING RETURNING 1 AS inserted",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inserted",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Bpchar"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "43e714d5d7ebd2c6c32d59ea1105b22156a9e0e912422961a52fea4c3d125d80"
+}

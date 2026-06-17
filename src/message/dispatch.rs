@@ -110,12 +110,21 @@ async fn dispatch_message(
                 anyhow::bail!("You don't have permission to send messages");
             }
 
-            if matches!(message.data, Data::MultiData(_)) {
-                if !group
-                    .compute_permissions(message.from, Some(message.to))
-                    .contains(Permissions::ATTACH_FILES)
+            if let Data::MultiData(data) = &message.data {
+                if data.has_attachment()
+                    && !group
+                        .compute_permissions(message.from, Some(message.to))
+                        .contains(Permissions::ATTACH_FILES)
                 {
                     anyhow::bail!("You don't have permission to attach files");
+                }
+
+                if data.has_links()
+                    && !group
+                        .compute_permissions(message.from, Some(message.to))
+                        .contains(Permissions::EMBED_LINKS)
+                {
+                    anyhow::bail!("You don't have permission to embed links");
                 }
             }
 
