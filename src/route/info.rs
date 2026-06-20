@@ -232,6 +232,83 @@ async fn get_public_key(state: State, user_id: web::Path<id>) -> Result<MsgPack<
     Ok(MsgPack(user.public_key))
 }
 
+#[serde_with::skip_serializing_none]
+#[derive(Serialize)]
+struct GroupDetail {
+    id: id,
+    name: String,
+    icon: Option<String>,
+    description: Option<String>,
+    owner: id,
+    member_count: i64,
+    online_count: usize,
+    text_channel_count: usize,
+    voice_channel_count: usize,
+    roles: Vec<state::group::Role>,
+}
+
+async fn get_group(
+    state: State,
+    user: web::ReqData<JwtUser>,
+    group_id: web::Path<id>,
+) -> Result<MsgPack<GroupDetail>, Error> {
+    let group_id = group_id.into_inner();
+
+    let is_member = state
+        .users
+        .get(&user.id)
+        .is_some_and(|u| u.state.groups.contains(&group_id));
+
+    if !is_member {
+        return Err(error::ErrorForbidden("You are not a member of this group"));
+    }
+
+    let info = db::group::get_groups_info(&state.pool, vec![group_id])
+        .await
+        .map_err(ErrorInternalServerError)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| error::ErrorNotFound("Group not found"))?;
+
+    let member_count = db::group::get_member_count(&state.pool, group_id)
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    let (text_channel_count, voice_channel_count) =
+        db::group::get_channel_counts(&state.pool, group_id)
+            .await
+            .map_err(ErrorInternalServerError)?;
+
+    let roles = db::group::get_roles(&state.pool, group_id)
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    let online_count = db::group::get_members(&state.pool, group_id)
+        .await
+        .map_err(ErrorInternalServerError)?
+        .into_iter()
+        .filter(|uid| {
+            state
+                .users
+                .get(uid)
+                .is_some_and(|u| !matches!(u.state.status, Status::Offline))
+        })
+        .count();
+
+    Ok(MsgPack(GroupDetail {
+        id: group_id,
+        name: info.name,
+        icon: info.icon,
+        description: info.description,
+        owner: info.created_by,
+        member_count,
+        online_count,
+        text_channel_count: text_channel_count as usize,
+        voice_channel_count: voice_channel_count as usize,
+        roles,
+    }))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/info")
@@ -239,6 +316,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/user/{id}", web::get().to(get_user))
             .route("/public_key/{id}", web::get().to(get_public_key))
             .route("/users", web::post().to(get_users))
-            .route("/groups", web::post().to(get_groups)),
+            .route("/groups", web::post().to(get_groups))
+            .route("/group/{id}", web::get().to(get_group)),
     );
 }

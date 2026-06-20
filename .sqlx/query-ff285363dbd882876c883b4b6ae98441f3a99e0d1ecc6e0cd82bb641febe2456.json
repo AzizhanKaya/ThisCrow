@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                COUNT(*) FILTER (WHERE channel_type = false) AS \"text!\",\n                COUNT(*) FILTER (WHERE channel_type = true) AS \"voice!\"\n            FROM channels\n            WHERE group_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "text!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "voice!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "ff285363dbd882876c883b4b6ae98441f3a99e0d1ecc6e0cd82bb641febe2456"
+}

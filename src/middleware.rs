@@ -34,7 +34,7 @@ pub fn create_jwt(user_id: id) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as usize
-        + 24 * 60 * 60;
+        + 30 * 24 * 60 * 60;
 
     let jwt_user = JwtUser {
         id: user_id,
@@ -88,12 +88,15 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        if let Some(cookie) = req.cookie("session") {
-            if let Some(claims) = verify_jwt(cookie.value()) {
-                req.extensions_mut().insert(claims);
-                let fut = self.service.call(req);
-                return Box::pin(async move { fut.await });
-            }
+        if let Some(claims) = req
+            .headers()
+            .get(actix_web::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(verify_jwt)
+        {
+            req.extensions_mut().insert(claims);
+            let fut = self.service.call(req);
+            return Box::pin(async move { fut.await });
         }
         Box::pin(async move { Err(ErrorUnauthorized("Invalid token")) })
     }

@@ -914,6 +914,58 @@ pub async fn get_member_count(pool: &Pool<Postgres>, group_id: id) -> Result<i64
     Ok(count)
 }
 
+/// Returns `(text_channel_count, voice_channel_count)` for the group.
+pub async fn get_channel_counts(
+    pool: &Pool<Postgres>,
+    group_id: id,
+) -> Result<(i64, i64), sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+            SELECT
+                COUNT(*) FILTER (WHERE channel_type = false) AS "text!",
+                COUNT(*) FILTER (WHERE channel_type = true) AS "voice!"
+            FROM channels
+            WHERE group_id = $1
+        "#,
+        *group_id,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok((row.text, row.voice))
+}
+
+pub async fn get_roles(pool: &Pool<Postgres>, group_id: id) -> Result<Vec<Role>, sqlx::Error> {
+    let roles = sqlx::query!(
+        r#"
+            SELECT
+                id AS "id:id",
+                name,
+                COALESCE(color, '') AS "color!",
+                position,
+                permissions
+            FROM roles
+            WHERE group_id = $1
+        "#,
+        *group_id,
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| {
+        Role::new(
+            r.id,
+            r.name,
+            r.position as usize,
+            r.color,
+            Permissions::from_bits_truncate(r.permissions as u64),
+        )
+    })
+    .collect();
+
+    Ok(roles)
+}
+
 /* ===== INVITATION ===== */
 
 #[derive(sqlx::FromRow, serde::Serialize)]

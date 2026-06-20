@@ -1,11 +1,7 @@
 use crate::db;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::create_jwt};
-use actix_web::{
-    Error, HttpResponse,
-    cookie::{Cookie, SameSite, time::Duration as CookieDuration},
-    error, web,
-};
+use actix_web::{Error, HttpResponse, error, web};
 use regex::Regex;
 use std::sync::LazyLock;
 use validator::Validate;
@@ -13,7 +9,7 @@ use validator::Validate;
 #[cfg(feature = "mail")]
 use dashmap::DashMap;
 use log::warn;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "mail")]
 use {
@@ -25,6 +21,11 @@ use {
     tokio::time::{self, Duration as TokioDuration},
 };
 
+#[derive(Serialize)]
+struct TokenResponse {
+    token: String,
+}
+
 static USERNAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_]+$").unwrap());
 
 // Authentication
@@ -35,23 +36,12 @@ struct Login {
     password: String,
 }
 
-async fn login(login: MsgPack<Login>, state: State) -> Result<HttpResponse, Error> {
+async fn login(login: MsgPack<Login>, state: State) -> Result<MsgPack<TokenResponse>, Error> {
     let result = db::user::login(&state.pool, &login.username, &login.password).await;
 
     if let Some(user) = result {
         let token = create_jwt(user.id);
-
-        Ok(HttpResponse::Ok()
-            .cookie(
-                Cookie::build("session", &token)
-                    .path("/")
-                    .http_only(true)
-                    .secure(true)
-                    .same_site(SameSite::None)
-                    .max_age(CookieDuration::days(1))
-                    .finish(),
-            )
-            .finish())
+        Ok(MsgPack(TokenResponse { token }))
     } else {
         Err(error::ErrorUnauthorized("Username or password is wrong."))
     }
@@ -121,16 +111,8 @@ async fn register(register: MsgPack<Register>, state: State) -> Result<HttpRespo
         let token = create_jwt(id);
 
         Ok(HttpResponse::Ok()
-            .cookie(
-                Cookie::build("session", &token)
-                    .path("/")
-                    .http_only(true)
-                    .secure(true)
-                    .same_site(SameSite::None)
-                    .max_age(CookieDuration::days(1))
-                    .finish(),
-            )
-            .finish())
+            .content_type("application/msgpack")
+            .body(crate::msgpack!(TokenResponse { token })))
     }
 
     #[cfg(feature = "mail")]
@@ -192,16 +174,10 @@ async fn verify_email(state: State, query: web::Query<VerifyEmail>) -> Result<Ht
     let token = create_jwt(id);
 
     Ok(HttpResponse::Found()
-        .append_header((header::LOCATION, "http://localhost:5173/"))
-        .cookie(
-            Cookie::build("session", &token)
-                .path("/")
-                .http_only(true)
-                .secure(true)
-                .same_site(SameSite::None)
-                .max_age(CookieDuration::days(1))
-                .finish(),
-        )
+        .append_header((
+            header::LOCATION,
+            format!("http://localhost:5173/#token={}", token),
+        ))
         .finish())
 }
 

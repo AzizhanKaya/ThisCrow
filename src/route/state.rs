@@ -3,9 +3,7 @@ use crate::id::id;
 use crate::message::snowflake::snowflake_id;
 use crate::msgpack::MsgPack;
 use crate::{State, middleware::JwtUser};
-use actix_web::cookie::Cookie;
-use actix_web::cookie::time::Duration as CookieDuration;
-use actix_web::{Error, HttpResponse, error, web};
+use actix_web::{Error, error, web};
 use log::warn;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -76,18 +74,6 @@ pub async fn get_dms(
     Ok(MsgPack(dms))
 }
 
-pub async fn log_out() -> Result<HttpResponse, Error> {
-    Ok(HttpResponse::Ok()
-        .cookie(
-            Cookie::build("session", "")
-                .path("/")
-                .http_only(true)
-                .max_age(CookieDuration::ZERO)
-                .finish(),
-        )
-        .finish())
-}
-
 pub async fn get_voice_direct(
     state: State,
     user: web::ReqData<JwtUser>,
@@ -139,7 +125,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/me", web::get().to(me))
             .route("/voice_direct", web::get().to(get_voice_direct))
             .route("/blocks", web::get().to(get_blocks))
-            .route("/blocked_by", web::get().to(get_blocked_by))
-            .route("/logout", web::get().to(log_out)),
+            .route("/blocked_by", web::get().to(get_blocked_by)),
     );
 }

@@ -87,21 +87,20 @@ static WS_CONFIG: Lazy<WebSocketConfig> = Lazy::new(|| {
 async fn ws_handshake(stream: TcpStream, state: State) {
     let mut user_id: id = Default::default();
 
-    let callback = |req: &Request, response: Response| -> Result<Response, ErrorResponse> {
-        let user = req
+    let callback = |req: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
+        let proto = req
             .headers()
-            .get(http::header::COOKIE)
+            .get(http::header::SEC_WEBSOCKET_PROTOCOL)
             .and_then(|header| header.to_str().ok())
-            .and_then(|cookie_str| {
-                cookie_str.split(';').find_map(|pair| {
-                    let (key, value) = pair.trim().split_once('=')?;
-                    if key == "session" { Some(value) } else { None }
-                })
-            })
-            .and_then(middleware::verify_jwt);
+            .map(str::to_owned);
 
-        if let Some(user) = user {
+        if let Some(user) = proto.as_deref().and_then(middleware::verify_jwt) {
             user_id = user.id;
+            if let Some(proto) = proto {
+                response
+                    .headers_mut()
+                    .insert(http::header::SEC_WEBSOCKET_PROTOCOL, proto.parse().unwrap());
+            }
             return Ok(response);
         }
 

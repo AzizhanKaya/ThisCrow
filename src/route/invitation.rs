@@ -6,6 +6,7 @@ use crate::middleware::JwtUser;
 use crate::msgpack::MsgPack;
 use crate::state::group::Member;
 use crate::state::group::Permissions;
+use crate::state::user::Status;
 use crate::{State, db};
 use actix_web::{Error, HttpResponse, error, web};
 use chrono::{DateTime, Duration, Utc};
@@ -33,6 +34,8 @@ async fn create_invitation(
                 "You don't have permission to create an invitation",
             ));
         }
+    } else {
+        return Err(error::ErrorNotFound("Group not found"));
     }
 
     let code: String = rand::rng()
@@ -154,6 +157,8 @@ async fn delete_invitation(
                 "You don't have permission to delete an invitation",
             ));
         }
+    } else {
+        return Err(error::ErrorNotFound("Group not found"));
     }
 
     db::group::delete_invitation(&state.pool, invitation_id)
@@ -251,23 +256,28 @@ async fn invitation_info(
             error::ErrorInternalServerError("Error while getting member count")
         })?;
 
-    let online_count = state
-        .groups
-        .get(&invitation.group_id)
-        .map(|g| g.get_online_count(&state))
-        .unwrap_or(0);
+    let (text_channel_count, voice_channel_count) =
+        db::group::get_channel_counts(&state.pool, invitation.group_id)
+            .await
+            .map_err(|e| {
+                log::error!("Error while getting channel counts: {}", e);
+                error::ErrorInternalServerError("Error while getting channel counts")
+            })?;
 
-    let text_channel_count = state
-        .groups
-        .get(&invitation.group_id)
-        .map(|g| g.get_text_channel_count())
-        .unwrap_or(0);
-
-    let voice_channel_count = state
-        .groups
-        .get(&invitation.group_id)
-        .map(|g| g.get_voice_channel_count())
-        .unwrap_or(0);
+    let online_count = db::group::get_members(&state.pool, invitation.group_id)
+        .await
+        .map_err(|e| {
+            log::error!("Error while getting members: {}", e);
+            error::ErrorInternalServerError("Error while getting members")
+        })?
+        .into_iter()
+        .filter(|uid| {
+            state
+                .users
+                .get(uid)
+                .is_some_and(|u| !matches!(u.state.status, Status::Offline))
+        })
+        .count();
 
     Ok(MsgPack(InvitationInfo {
         group_id: invitation.group_id,
@@ -276,8 +286,8 @@ async fn invitation_info(
         group_description: group.description,
         member_count,
         online_count,
-        text_channel_count,
-        voice_channel_count,
+        text_channel_count: text_channel_count as usize,
+        voice_channel_count: voice_channel_count as usize,
         owner: group.created_by,
     }))
 }
